@@ -1,0 +1,191 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Dashboard{% endblock %} - Library Management System</title>
+  <link rel="stylesheet" href="{% static 'css/style.css' %}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+  {% if user.is_authenticated %}
+  <!-- LEFT SIDEBAR -->
+  <aside class="app-sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-brand-icon">
+        <!-- Clean Book SVG -->
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+        </svg>
+      </div>
+      <div>
+        <div class="sidebar-brand-text">Library System</div>
+        <div class="sidebar-brand-subtitle">School Library Portal</div>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      
+      <!-- Role: MEMBER (Student) Navigation -->
+      {% if user.profile.is_member %}
+        <div class="sidebar-section-title">Library</div>
+        <a href="{% url 'dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>
+          <span>Home</span>
+        </a>
+        <a href="{% url 'book_list' %}" class="sidebar-link {% if 'book' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+          <span>Find Books</span>
+        </a>
+        <a href="{% url 'reservation_list' %}" class="sidebar-link {% if 'reservation' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" /></svg>
+          <span>My Reservations</span>
+        </a>
+        <a href="{% url 'fines_list' %}" class="sidebar-link {% if 'fine' in request.resolver_match.url_name or 'receipt' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2zM10 8.5a.5.5 0 11-1 0 .5.5 0 011 0zm5 5a.5.5 0 11-1 0 .5.5 0 011 0z" /></svg>
+          <span>My Fines & Receipts</span>
+        </a>
+        <a href="{% url 'notification_list' %}" class="sidebar-link {% if 'notification' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+          <span>Notifications</span>
+        </a>
+
+      <!-- Role: LIBRARIAN Navigation -->
+      {% elif user.profile.is_librarian %}
+        <div class="sidebar-section-title">Main</div>
+        <a href="{% url 'dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
+          <span>Dashboard</span>
+        </a>
+        <a href="{% url 'book_list' %}" class="sidebar-link {% if 'book' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+          <span>Books</span>
+        </a>
+        <a href="{% url 'member_list' %}" class="sidebar-link {% if 'member' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+          <span>Members</span>
+        </a>
+
+        <div class="sidebar-section-title">Desk Services</div>
+        <a href="{% url 'transaction_list' %}" class="sidebar-link {% if 'transaction' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+          <span>Borrow & Return</span>
+        </a>
+        <a href="{% url 'reservation_list' %}" class="sidebar-link {% if 'reservation' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" /></svg>
+          <span>Reservations</span>
+        </a>
+        <a href="{% url 'fines_list' %}" class="sidebar-link {% if 'fine' in request.resolver_match.url_name or 'receipt' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <span>Fines & Payments</span>
+        </a>
+        <a href="{% url 'reports_dashboard' %}" class="sidebar-link {% if 'report' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+          <span>Reports</span>
+        </a>
+        <a href="{% url 'notification_list' %}" class="sidebar-link {% if 'notification' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+          <span>Notifications</span>
+        </a>
+
+      <!-- Role: ADMINISTRATOR Navigation -->
+      {% else %}
+        <div class="sidebar-section-title">Administration</div>
+        <a href="{% url 'dashboard' %}" class="sidebar-link {% if request.resolver_match.url_name == 'dashboard' %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" /></svg>
+          <span>Dashboard</span>
+        </a>
+        <a href="{% url 'user_management' %}" class="sidebar-link {% if 'user_management' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
+          <span>User Accounts</span>
+        </a>
+        <a href="{% url 'book_list' %}" class="sidebar-link {% if 'book' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+          <span>Books</span>
+        </a>
+        <a href="{% url 'member_list' %}" class="sidebar-link {% if 'member' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+          <span>Members</span>
+        </a>
+        <a href="{% url 'reports_dashboard' %}" class="sidebar-link {% if 'report' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+          <span>Reports</span>
+        </a>
+        <a href="{% url 'notification_list' %}" class="sidebar-link {% if 'notification' in request.resolver_match.url_name %}active{% endif %}">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+          <span>Notifications</span>
+        </a>
+      {% endif %}
+
+    </nav>
+
+    <!-- User Profile Footer -->
+    <div class="sidebar-footer">
+      <div class="user-profile-summary">
+        <div class="user-avatar-badge">
+          {{ user.first_name|default:user.username|slice:":1"|upper }}
+        </div>
+        <div class="user-profile-info">
+          <div class="user-profile-name">{{ user.get_full_name|default:user.username }}</div>
+          <div class="user-profile-role">
+            {% if user.profile.role == 'ADMIN' or user.is_superuser %}Tagapangasiwa (Admin){% elif user.profile.role == 'LIBRARIAN' %}Librarian{% else %}Mag-aaral (Student){% endif %}
+          </div>
+        </div>
+      </div>
+      <a href="{% url 'logout' %}" class="logout-icon-btn" title="Log Out">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" style="width: 18px; height: 18px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+      </a>
+    </div>
+  </aside>
+  {% endif %}
+
+  <!-- MAIN APP AREA -->
+  <main class="app-main">
+    {% if user.is_authenticated %}
+    <header class="app-topbar">
+      <div class="topbar-breadcrumb">
+        <a href="{% url 'dashboard' %}">Home</a>
+        <span>/</span>
+        <span style="color: var(--text-heading); font-weight: 500;">{% block breadcrumb %}Overview{% endblock %}</span>
+      </div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">
+        {% now "l, F d, Y" %}
+      </div>
+    </header>
+    {% endif %}
+
+    <div class="app-content">
+      <!-- System Messages / Flash alerts -->
+      {% if messages %}
+        {% for message in messages %}
+          <div class="alert {% if message.tags == 'error' %}alert-danger{% else %}alert-{{ message.tags }}{% endif %}">
+            <span>{{ message }}</span>
+            <button type="button" onclick="this.parentElement.remove()" style="background: none; border: none; font-size: 1rem; cursor: pointer; color: inherit;">×</button>
+          </div>
+        {% endfor %}
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+  <!-- Global Modal Helpers -->
+  <script>
+    function openModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.add('active');
+    }
+    function closeModal(id) {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('active');
+    }
+    window.addEventListener('click', function(e) {
+      if (e.target.classList.contains('modal-overlay')) {
+        e.target.classList.remove('active');
+      }
+    });
+  </script>
+</body>
+</html>

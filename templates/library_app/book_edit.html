@@ -1,0 +1,81 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Edit {{ book.title }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <a href="{% url 'book_detail' book.id %}" style="font-size: 0.85rem; color: var(--primary); font-weight: 600;">← Back to Book</a>
+    <h1 class="page-title" style="margin-top: 0.5rem;">Edit Book Record</h1>
+  </div>
+</div>
+
+<div class="card" style="max-width: 800px; margin: 0 auto;">
+  <form method="POST">
+    {% csrf_token %}
+    <div class="card-body">
+      <div class="form-group">
+        <label class="form-label">Book Title *</label>
+        <input type="text" name="title" class="form-control" value="{{ book.title }}" required>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Author *</label>
+          <input type="text" name="author" class="form-control" value="{{ book.author }}" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">ISBN *</label>
+          <input type="text" name="isbn" class="form-control" value="{{ book.isbn }}" required>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Category *</label>
+          <select name="category" class="form-control" required>
+            {% for cat in categories %}
+            <option value="{{ cat.id }}" {% if book.category.id == cat.id %}selected{% endif %}>{{ cat.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Shelf Number *</label>
+          <input type="text" name="shelf_number" class="form-control" value="{{ book.shelf_number }}" required>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Publication Year</label>
+          <input type="number" name="publication_year" class="form-control" value="{{ book.publication_year|default:'' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Item Status *</label>
+          <select name="status" class="form-control">
+            <option value="AVAILABLE" {% if book.status == 'AVAILABLE' %}selected{% endif %}>Available</option>
+            <option value="BORROWED" {% if book.status == 'BORROWED' %}selected{% endif %}>Borrowed</option>
+            <option value="RESERVED" {% if book.status == 'RESERVED' %}selected{% endif %}>Reserved</option>
+            <option value="LOST" {% if book.status == 'LOST' %}selected{% endif %}>Lost</option>
+            <option value="UNDER_REPAIR" {% if book.status == 'UNDER_REPAIR' %}selected{% endif %}>Under Repair</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Cover Image URL</label>
+        <input type="url" name="cover_image_url" class="form-control" value="{{ book.cover_image_url }}" placeholder="https://... cover image link">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Description / Synopsis</label>
+        <textarea name="description" class="form-control" rows="4">{{ book.description }}</textarea>
+      </div>
+    </div>
+    <div class="card-header" style="justify-content: flex-end; gap: 0.75rem;">
+      <a href="{% url 'book_detail' book.id %}" class="btn btn-secondary">Cancel</a>
+      <button type="submit" class="btn btn-primary">Save Changes</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

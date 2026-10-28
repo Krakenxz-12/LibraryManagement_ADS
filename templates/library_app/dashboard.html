@@ -1,0 +1,273 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Dashboard{% endblock %}
+{% block breadcrumb %}Dashboard Overview{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">
+      {% if user.profile.is_member %}
+        Welcome to the Library!
+      {% else %}
+        Good day, {{ user.first_name|default:user.username }}.
+      {% endif %}
+    </h1>
+    <p class="page-description">
+      {% if user.profile.is_member %}
+        Browse books, check your current loans, and manage your reservations.
+      {% else %}
+        Here is what is happening in the school library today.
+      {% endif %}
+    </p>
+  </div>
+</div>
+
+<!-- LIBRARIAN & ADMIN DASHBOARD -->
+{% if not user.profile.is_member %}
+
+<!-- 4 Key Useful Statistics (Clean SVG icons, no emojis) -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-icon green">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+    </div>
+    <div class="stat-info">
+      <div class="stat-value">{{ total_books }}</div>
+      <div class="stat-label">Total Book Copies</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon blue">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+    </div>
+    <div class="stat-info">
+      <div class="stat-value">{{ available_books }}</div>
+      <div class="stat-label">Available Copies</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon amber">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+    </div>
+    <div class="stat-info">
+      <div class="stat-value">{{ borrowed_books }}</div>
+      <div class="stat-label">Currently Borrowed</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon red">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+    </div>
+    <div class="stat-info">
+      <div class="stat-value">{{ overdue_books }}</div>
+      <div class="stat-label">Overdue Books</div>
+    </div>
+  </div>
+</div>
+
+<!-- Prioritized Everyday Actions for Librarians -->
+<div class="card" style="margin-bottom: 1.5rem;">
+  <div class="card-header">
+    <h2 class="card-title">Quick Actions</h2>
+  </div>
+  <div class="card-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.85rem;">
+      <a href="{% url 'transaction_list' %}" class="quick-action-btn">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+        <span>Borrow a Book</span>
+      </a>
+      <a href="{% url 'transaction_list' %}?tab=return" class="quick-action-btn">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+        <span>Return a Book</span>
+      </a>
+      <a href="{% url 'book_list' %}" class="quick-action-btn">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+        <span>Find a Book</span>
+      </a>
+      <a href="{% url 'member_list' %}?tab=register" class="quick-action-btn">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" /></svg>
+        <span>Register Member</span>
+      </a>
+      <a href="{% url 'book_list' %}?action=new" class="quick-action-btn">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
+        <span>Add a Book</span>
+      </a>
+      <a href="{% url 'reports_dashboard' %}" class="quick-action-btn">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+        <span>View Reports</span>
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- 2-Column: Recent Desk Activity & Overdue Warnings -->
+<div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 1.5rem;">
+  
+  <!-- Recent Circulation Activities -->
+  <div class="card" style="margin-bottom: 0;">
+    <div class="card-header">
+      <h2 class="card-title">Recent Circulation Activity</h2>
+      <a href="{% url 'transaction_list' %}" class="btn btn-secondary btn-sm">View All</a>
+    </div>
+    <div class="table-responsive">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Book Title</th>
+            <th>Due Date</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in recent_transactions %}
+          <tr>
+            <td>
+              <strong>{{ txn.member.full_name }}</strong><br>
+              <span style="font-size: 0.725rem; color: var(--text-muted);">{{ txn.member.member_id }}</span>
+            </td>
+            <td>
+              <div style="font-weight: 500;">{{ txn.book.title }}</div>
+            </td>
+            <td>
+              <span style="font-size: 0.8rem;">{{ txn.due_date|date:"M d, Y" }}</span>
+            </td>
+            <td>
+              {% if txn.status == 'BORROWED' %}
+                {% if txn.is_currently_overdue %}
+                  <span class="status-badge overdue">Overdue</span>
+                {% else %}
+                  <span class="status-badge borrowed">Borrowed</span>
+                {% endif %}
+              {% elif txn.status == 'RETURNED' %}
+                <span class="status-badge available">Returned</span>
+              {% else %}
+                <span class="status-badge neutral">{{ txn.status }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="4" class="empty-state">
+              <div class="empty-state-title">No transactions yet</div>
+              <div class="empty-state-text">Recent borrowings and returns will appear here.</div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Books That Need to Be Returned Soon / Overdue -->
+  <div class="card" style="margin-bottom: 0;">
+    <div class="card-header">
+      <h2 class="card-title">Books That Need to Be Returned</h2>
+      <span class="status-badge overdue">{{ overdue_books }} Overdue</span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+      {% if overdue_txns %}
+        <div style="display: flex; flex-direction: column;">
+          {% for otxn in overdue_txns %}
+          <div style="padding: 0.85rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;">
+            <div>
+              <div style="font-weight: 600; font-size: 0.85rem; color: var(--text-heading);">{{ otxn.book.title }}</div>
+              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem;">
+                Borrowed by: {{ otxn.member.full_name }}
+              </div>
+              <div style="font-size: 0.75rem; color: #b91c1c; font-weight: 600; margin-top: 0.15rem;">
+                Was due on: {{ otxn.due_date|date:"M d, Y" }}
+              </div>
+            </div>
+            <a href="{% url 'transaction_list' %}?tab=return" class="btn btn-secondary btn-sm">Process Return</a>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-title">No overdue books</div>
+          <div class="empty-state-text">All checked-out materials are currently within their loan period.</div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<!-- STUDENT / MEMBER DASHBOARD -->
+{% else %}
+
+<!-- Prominent Book Search for Students -->
+<div class="card" style="margin-bottom: 1.5rem; background: #ffffff;">
+  <div class="card-body" style="padding: 1.5rem;">
+    <h2 style="font-size: 1.1rem; font-weight: 700; color: var(--text-heading); margin-bottom: 0.5rem;">
+      Find a book to read
+    </h2>
+    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem;">
+      Search by book title, author, topic, or shelf location.
+    </p>
+    <form action="{% url 'book_list' %}" method="GET" style="display: flex; gap: 0.75rem;">
+      <input type="text" name="q" class="form-control" placeholder="Type a title or author (e.g. 'Science', 'Dune', 'Harper Lee')..." style="font-size: 0.95rem; padding: 0.65rem 1rem;">
+      <button type="submit" class="btn btn-primary" style="padding: 0.65rem 1.25rem;">
+        Search Books
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Student's Current Borrowed Books -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">My Borrowed Books</h2>
+    <span class="status-badge borrowed">{{ member_active_borrows|length }} Active Loans</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Book Title</th>
+          <th>Author</th>
+          <th>Date Borrowed</th>
+          <th>Return Due Date</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in member_active_borrows %}
+        <tr>
+          <td><strong style="color: var(--primary);">{{ b.book.title }}</strong></td>
+          <td>{{ b.book.author }}</td>
+          <td>{{ b.issue_date|date:"F d, Y" }}</td>
+          <td>
+            <span style="font-weight: 600; {% if b.is_currently_overdue %}color: #b91c1c;{% endif %}">
+              {{ b.due_date|date:"F d, Y" }}
+            </span>
+          </td>
+          <td>
+            {% if b.is_currently_overdue %}
+              <span class="status-badge overdue">Past Due Date</span>
+            {% else %}
+              <span class="status-badge borrowed">Borrowed</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="5" class="empty-state">
+            <div class="empty-state-title">You have no books borrowed right now</div>
+            <div class="empty-state-text">Visit the catalog to find and reserve books for your studies or reading leisure.</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endif %}
+
+{% endblock %}

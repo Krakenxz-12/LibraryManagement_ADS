@@ -1,0 +1,67 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Sign In{% endblock %}
+
+{% block content %}
+<div style="max-width: 420px; margin: 3rem auto;">
+  <div class="card" style="box-shadow: var(--shadow-modal); border-radius: var(--radius-lg);">
+    <div class="card-header" style="justify-content: center; text-align: center; flex-direction: column; padding: 2rem 1.5rem 1rem;">
+      <div style="width: 50px; height: 50px; background: var(--primary-light); color: var(--primary); border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; margin-bottom: 0.75rem;">
+        <svg width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"></path>
+        </svg>
+      </div>
+      <h2 style="font-size: 1.35rem; font-weight: 700; color: var(--text-heading);">Library Management System</h2>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">Sign in to access your library account</p>
+    </div>
+
+    <div class="card-body" style="padding: 1.25rem 1.75rem 2rem;">
+      <form method="POST">
+        {% csrf_token %}
+        <div class="form-group">
+          <label class="form-label" for="login-username">Username</label>
+          <input type="text" name="username" id="login-username" class="form-control" required placeholder="Enter username" autofocus>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="login-password">Password</label>
+          <input type="password" name="password" id="login-password" class="form-control" required placeholder="Enter password">
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.65rem; font-size: 0.9rem; margin-top: 0.5rem;">
+          Sign In
+        </button>
+      </form>
+
+      <!-- Demo Accounts Helper -->
+      <div style="margin-top: 1.75rem; padding-top: 1.25rem; border-top: 1px dashed var(--border);">
+        <p style="font-size: 0.72rem; font-weight: 600; text-transform: uppercase; color: var(--text-muted); text-align: center; letter-spacing: 0.04em; margin-bottom: 0.75rem;">
+          Select a Demo Account
+        </p>
+        <div style="display: flex; flex-direction: column; gap: 0.45rem;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fillLogin('librarian', 'librarian123')" style="justify-content: space-between;">
+            <span><strong>Librarian</strong> (librarian)</span>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">librarian123</span>
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fillLogin('admin', 'admin123')" style="justify-content: space-between;">
+            <span><strong>Administrator</strong> (admin)</span>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">admin123</span>
+          </button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="fillLogin('member', 'member123')" style="justify-content: space-between;">
+            <span><strong>Student Member</strong> (member)</span>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">member123</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+function fillLogin(user, pass) {
+  document.getElementById('login-username').value = user;
+  document.getElementById('login-password').value = pass;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,229 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Members{% endblock %}
+{% block breadcrumb %}Patron Directory{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Library Members</h1>
+    <p class="page-description">Manage student, faculty, and staff library cards and memberships.</p>
+  </div>
+</div>
+
+<!-- Tab Switcher (Directory vs Register) -->
+<div class="tab-switch">
+  <button type="button" class="tab-btn active" id="btn-tab-members" onclick="switchMemberTab('list')">Member Directory</button>
+  <button type="button" class="tab-btn" id="btn-tab-register" onclick="switchMemberTab('register')">Register a New Member</button>
+</div>
+
+<!-- TAB 1: MEMBER DIRECTORY -->
+<div id="tab-members-view">
+  
+  <!-- Search Bar -->
+  <div class="card" style="margin-bottom: 1.25rem;">
+    <div class="card-body" style="padding: 1.15rem 1.25rem;">
+      <form method="GET" style="display: flex; gap: 0.75rem;">
+        <div style="flex: 1; position: relative;">
+          <input type="text" name="q" value="{{ query }}" class="form-control" placeholder="Search member by name, Student ID, or email..." style="padding-left: 2.25rem;">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" style="position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%); width: 18px; height: 18px; color: var(--text-light);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+        </div>
+        <button type="submit" class="btn btn-secondary">Search</button>
+        {% if query %}
+        <a href="{% url 'member_list' %}" class="btn btn-secondary" style="color: var(--text-muted);">Clear</a>
+        {% endif %}
+      </form>
+    </div>
+  </div>
+
+  <!-- Members Table -->
+  <div class="card">
+    <div class="table-responsive">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Member ID</th>
+            <th>Full Name</th>
+            <th>Membership Type</th>
+            <th>Email & Phone</th>
+            <th>Outstanding Fines</th>
+            <th>Account Status</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in members %}
+          <tr>
+            <td>
+              <span style="font-family: monospace; font-weight: 600; color: var(--primary);">{{ m.member_id }}</span>
+            </td>
+            <td>
+              <a href="{% url 'member_detail' m.id %}" style="font-weight: 600; color: var(--text-heading);">
+                {{ m.full_name }}
+              </a>
+            </td>
+            <td>
+              <span class="status-badge neutral">{{ m.get_membership_type_display }}</span>
+            </td>
+            <td>
+              <div style="font-size: 0.8rem; color: var(--text-heading);">{{ m.email }}</div>
+              <div style="font-size: 0.75rem; color: var(--text-muted);">{{ m.phone|default:"No phone" }}</div>
+            </td>
+            <td>
+              {% if m.balance > 0 %}
+                <span style="color: #b91c1c; font-weight: 700;">₱{{ m.balance }}</span>
+              {% else %}
+                <span style="color: var(--status-available-text); font-size: 0.8rem;">No fines (₱0.00)</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if m.status == 'ACTIVE' %}
+                <span class="status-badge available">Active</span>
+              {% elif m.status == 'INACTIVE' %}
+                <span class="status-badge neutral">Inactive</span>
+              {% else %}
+                <span class="status-badge overdue">Suspended</span>
+              {% endif %}
+            </td>
+            <td style="text-align: right;">
+              <a href="{% url 'member_detail' m.id %}" class="btn btn-secondary btn-sm">
+                View Profile
+              </a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="7" class="empty-state">
+              <div class="empty-state-title">No members found</div>
+              <div class="empty-state-text">Click "Register a New Member" above to add students and staff.</div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- TAB 2: REGISTER A NEW MEMBER FORM -->
+<div id="tab-register-view" style="display: none;">
+  <div class="card" style="max-width: 820px; margin: 0 auto;">
+    <div class="card-header">
+      <h2 class="card-title">New Member Registration</h2>
+    </div>
+    <form action="{% url 'member_create' %}" method="POST">
+      {% csrf_token %}
+      <div class="card-body">
+        
+        <!-- Section 1: Personal Information -->
+        <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--text-heading); margin-bottom: 0.85rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border);">
+          1. Personal Information
+        </h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">First Name *</label>
+            <input type="text" name="first_name" class="form-control" required placeholder="e.g. Juan">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Last Name *</label>
+            <input type="text" name="last_name" class="form-control" required placeholder="e.g. Dela Cruz">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Date of Birth</label>
+            <input type="date" name="date_of_birth" class="form-control">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Membership Type *</label>
+            <select name="membership_type" class="form-control">
+              <option value="STUDENT" selected>Student</option>
+              <option value="FACULTY">Faculty</option>
+              <option value="STAFF">Staff</option>
+              <option value="COMMUNITY">Community / External</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Section 2: Contact Information -->
+        <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--text-heading); margin: 1.5rem 0 0.85rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border);">
+          2. Contact Information
+        </h3>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Email Address *</label>
+            <input type="email" name="email" class="form-control" required placeholder="student@school.edu.ph">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Phone Number</label>
+            <input type="tel" name="phone" class="form-control" placeholder="0917-123-4567">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Home or Campus Address</label>
+          <input type="text" name="address" class="form-control" placeholder="e.g. Brgy. Loyola Heights, Quezon City, Metro Manila">
+        </div>
+
+        <!-- Section 3: Online Library Account -->
+        <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--text-heading); margin: 1.5rem 0 0.85rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border);">
+          3. Online Library Account
+        </h3>
+        <div style="margin-bottom: 1rem;">
+          <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer;">
+            <input type="checkbox" name="create_user_account" id="chk-create-account" onchange="toggleAccountFields(this.checked)" checked style="accent-color: var(--primary);">
+            <span>Create a login username and password for this member so they can view books online</span>
+          </label>
+        </div>
+
+        <div id="account-credentials-wrap" class="form-row">
+          <div class="form-group">
+            <label class="form-label">Username</label>
+            <input type="text" name="username" class="form-control" placeholder="Leave blank to use Member ID">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Temporary Password</label>
+            <input type="password" name="password" class="form-control" value="member123">
+            <div class="form-hint">Default password is: member123</div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="modal-footer" style="border-radius: 0 0 var(--radius-lg) var(--radius-lg);">
+        <button type="button" class="btn btn-secondary" onclick="switchMemberTab('list')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Member</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function switchMemberTab(tab) {
+  const listView = document.getElementById('tab-members-view');
+  const registerView = document.getElementById('tab-register-view');
+  const btnList = document.getElementById('btn-tab-members');
+  const btnRegister = document.getElementById('btn-tab-register');
+
+  listView.style.display = (tab === 'list') ? 'block' : 'none';
+  registerView.style.display = (tab === 'register') ? 'block' : 'none';
+
+  btnList.classList.toggle('active', tab === 'list');
+  btnRegister.classList.toggle('active', tab === 'register');
+}
+
+function toggleAccountFields(isChecked) {
+  const wrap = document.getElementById('account-credentials-wrap');
+  if (wrap) wrap.style.display = isChecked ? 'grid' : 'none';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('tab') === 'register' || params.get('action') === 'new') {
+    switchMemberTab('register');
+  }
+});
+</script>
+{% endblock %}

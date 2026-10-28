@@ -1,0 +1,175 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}User Accounts{% endblock %}
+{% block breadcrumb %}System Accounts & Security{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">User Accounts</h1>
+    <p class="page-description">Manage staff privileges, administrator credentials, and system backup archives.</p>
+  </div>
+  <div style="display: flex; gap: 0.5rem;">
+    <button class="btn btn-primary" onclick="openModal('add-user-modal')">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" style="width: 16px; height: 16px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+      <span>Add User Account</span>
+    </button>
+  </div>
+</div>
+
+<!-- Role Filter Pills -->
+<div class="filter-pills">
+  <a href="{% url 'user_management' %}?role=all" class="filter-pill {% if selected_role == 'all' or not selected_role %}active{% endif %}">
+    All Roles
+  </a>
+  <a href="{% url 'user_management' %}?role=admin" class="filter-pill {% if selected_role == 'admin' %}active{% endif %}">
+    Administrators
+  </a>
+  <a href="{% url 'user_management' %}?role=librarian" class="filter-pill {% if selected_role == 'librarian' %}active{% endif %}">
+    Librarians
+  </a>
+  <a href="{% url 'user_management' %}?role=member" class="filter-pill {% if selected_role == 'member' %}active{% endif %}">
+    Student Members
+  </a>
+</div>
+
+<!-- User Accounts Table -->
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Full Name</th>
+          <th>Assigned Role</th>
+          <th>Permissions & Access</th>
+          <th>Account Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        <tr>
+          <td>
+            <strong style="color: var(--primary);">{{ u.username }}</strong>
+          </td>
+          <td>
+            {{ u.get_full_name|default:u.username }}
+          </td>
+          <td>
+            {% if u.profile.role == 'ADMIN' or u.is_superuser %}
+              <span class="status-badge neutral" style="font-weight: 700;">Administrator</span>
+            {% elif u.profile.role == 'LIBRARIAN' %}
+              <span class="status-badge available">Librarian</span>
+            {% else %}
+              <span class="status-badge neutral">Student Member</span>
+            {% endif %}
+          </td>
+          <td>
+            <span style="font-size: 0.775rem; color: var(--text-muted);">
+              {% if u.profile.role == 'ADMIN' or u.is_superuser %}
+                Full administrative access, user permissions, database backups
+              {% elif u.profile.role == 'LIBRARIAN' %}
+                Circulation desk, catalog management, fines, reports
+              {% else %}
+                Online catalog search, reservations, reading history
+              {% endif %}
+            </span>
+          </td>
+          <td>
+            {% if u.is_active %}
+              <span class="status-badge available">Active</span>
+            {% else %}
+              <span class="status-badge overdue">Inactive</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="5" class="empty-state">
+            <div class="empty-state-title">No users found</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Module 10: Database Backups & System Safety -->
+<div id="backup" class="card">
+  <div class="card-header">
+    <h2 class="card-title">Database Backups & Data Protection</h2>
+    <a href="{% url 'backup_download' %}" class="btn btn-secondary btn-sm">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" style="width: 14px; height: 14px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+      <span>Download Backup Archive (.json)</span>
+    </a>
+  </div>
+  <div class="card-body">
+    <p style="font-size: 0.825rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.4;">
+      Save a complete point-in-time snapshot of the library catalog, member accounts, active loans, and fine payments. You can restore this file if the system needs to be recovered.
+    </p>
+
+    <form action="{% url 'backup_restore' %}" method="POST" enctype="multipart/form-data" style="display: flex; gap: 0.75rem; align-items: center; max-width: 480px;">
+      {% csrf_token %}
+      <input type="file" name="backup_file" accept=".json" class="form-control" style="font-size: 0.8rem; padding: 0.4rem 0.65rem;" required>
+      <button type="submit" class="btn btn-secondary btn-sm" onclick="return confirm('Restore library database from this archive file? Existing records will be updated.')">
+        Restore Archive
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Modal: Add User Account -->
+<div id="add-user-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Add a User Account</h3>
+      <button type="button" onclick="closeModal('add-user-modal')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">×</button>
+    </div>
+    <form method="POST">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="create_staff">
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Username *</label>
+            <input type="text" name="username" class="form-control" required placeholder="e.g. librarian2">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Password *</label>
+            <input type="password" name="password" class="form-control" required placeholder="Account password">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">First Name</label>
+            <input type="text" name="first_name" class="form-control" placeholder="Maria">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Last Name</label>
+            <input type="text" name="last_name" class="form-control" placeholder="Santos">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Email Address</label>
+            <input type="email" name="email" class="form-control" placeholder="staff@school.edu.ph">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Assigned Role *</label>
+            <select name="role" class="form-control">
+              <option value="LIBRARIAN" selected>Librarian</option>
+              <option value="ADMIN">Administrator</option>
+              <option value="MEMBER">Student Member</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('add-user-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create Account</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

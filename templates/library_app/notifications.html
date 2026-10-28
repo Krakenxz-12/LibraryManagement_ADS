@@ -1,0 +1,108 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Notifications{% endblock %}
+{% block breadcrumb %}System Alerts & Reminders{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Notifications & Reminders</h1>
+    <p class="page-description">Automated due date notices, overdue loan reminders, and book reservation alerts.</p>
+  </div>
+  {% if unread_count > 0 %}
+  <a href="{% url 'mark_all_notifications_read' %}" class="btn btn-secondary btn-sm">
+    Mark All as Read
+  </a>
+  {% endif %}
+</div>
+
+<!-- Category Pills Row -->
+<div class="filter-pills">
+  <a href="{% url 'notification_list' %}?type=all" class="filter-pill {% if selected_type == 'all' or not selected_type %}active{% endif %}">
+    All Notifications
+  </a>
+  <a href="{% url 'notification_list' %}?type=due_dates" class="filter-pill {% if selected_type == 'due_dates' %}active{% endif %}">
+    Due Dates
+  </a>
+  <a href="{% url 'notification_list' %}?type=overdue" class="filter-pill {% if selected_type == 'overdue' %}active{% endif %}">
+    Overdue
+  </a>
+  <a href="{% url 'notification_list' %}?type=reservations" class="filter-pill {% if selected_type == 'reservations' %}active{% endif %}">
+    Reservations
+  </a>
+  <a href="{% url 'notification_list' %}?type=system" class="filter-pill {% if selected_type == 'system' %}active{% endif %}">
+    System
+  </a>
+</div>
+
+<!-- Notification Feed List (No emojis, clean SVGs) -->
+<div class="card">
+  {% for n in notifications %}
+  <div class="notification-item {% if not n.is_read %}unread{% endif %}">
+    
+    <!-- Clean Icon Indicator -->
+    <div class="notification-icon-wrapper {% if n.notification_type == 'DUE_DATE' %}notification-icon-due{% elif n.notification_type == 'OVERDUE' %}notification-icon-overdue{% elif n.notification_type == 'RESERVATION_READY' %}notification-icon-reservation{% else %}notification-icon-default{% endif %}">
+      {% if n.notification_type == 'DUE_DATE' %}
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+      {% elif n.notification_type == 'OVERDUE' %}
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+      {% elif n.notification_type == 'RESERVATION_READY' %}
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" /></svg>
+      {% else %}
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+      {% endif %}
+    </div>
+
+    <!-- Content -->
+    <div class="notification-content">
+      <div class="notification-title">
+        {{ n.title }}
+      </div>
+      <div class="notification-message">
+        {{ n.message }}
+      </div>
+      <div class="notification-time">
+        {{ n.created_at|timesince }} ago
+      </div>
+    </div>
+
+    <!-- Mark Read Button -->
+    {% if not n.is_read %}
+    <div>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="markNotifRead({{ n.id }}, this)">
+        Dismiss
+      </button>
+    </div>
+    {% endif %}
+
+  </div>
+  {% empty %}
+  <div class="empty-state">
+    <div class="empty-state-title">No notifications</div>
+    <div class="empty-state-text">You are all caught up on your library reminders.</div>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+function markNotifRead(notifId, btn) {
+  fetch('/notifications/' + notifId + '/read/', {
+    method: 'POST',
+    headers: {
+      'X-CSRFToken': '{{ csrf_token }}',
+      'Content-Type': 'application/json'
+    }
+  })
+  .then(res => res.json())
+  .then(data => {
+    if (data.status === 'ok') {
+      const row = btn.closest('.notification-item');
+      if (row) {
+        row.classList.remove('unread');
+      }
+      btn.remove();
+    }
+  });
+}
+</script>
+{% endblock %}

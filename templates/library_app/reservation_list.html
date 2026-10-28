@@ -1,0 +1,90 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Reservations{% endblock %}
+{% block breadcrumb %}Book Reservations{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Book Reservations</h1>
+    <p class="page-description">Hold requests placed by students and faculty for books currently checked out.</p>
+  </div>
+  <a href="{% url 'book_list' %}" class="btn btn-secondary">
+    Browse Books to Reserve
+  </a>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Reservation No.</th>
+          <th>Book Title</th>
+          <th>Reserved By</th>
+          <th>Date Requested</th>
+          <th>Status</th>
+          <th style="text-align: right;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for res in reservations %}
+        <tr>
+          <td>
+            <span style="font-family: monospace; font-size: 0.8rem; font-weight: 600; color: var(--text-heading);">{{ res.reservation_code }}</span>
+          </td>
+          <td>
+            <a href="{% url 'book_detail' res.book.id %}" style="font-weight: 600; color: var(--text-heading); display: block;">
+              {{ res.book.title }}
+            </a>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">By {{ res.book.author }}</span>
+          </td>
+          <td>
+            <strong>{{ res.member.full_name }}</strong><br>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">{{ res.member.member_id }}</span>
+          </td>
+          <td>
+            <span style="font-size: 0.825rem;">{{ res.reservation_date|date:"F d, Y" }}</span>
+          </td>
+          <td>
+            {% if res.status == 'READY' %}
+              <span class="status-badge available">Ready for Pickup</span>
+            {% elif res.status == 'PENDING' %}
+              <span class="status-badge reserved">Waiting for Return</span>
+            {% elif res.status == 'FULFILLED' %}
+              <span class="status-badge neutral">Completed</span>
+            {% else %}
+              <span class="status-badge neutral">Cancelled</span>
+            {% endif %}
+          </td>
+          <td style="text-align: right;">
+            {% if res.status in 'PENDING,READY' %}
+              <a href="{% url 'cancel_reservation' res.id %}" class="btn btn-danger btn-sm" onclick="return confirm('Cancel reservation for {{ res.book.title }}?')">
+                Cancel Hold
+              </a>
+            {% else %}
+              <span style="font-size: 0.775rem; color: var(--text-light);">-</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" class="empty-state">
+            <div class="empty-state-title">No active book reservations</div>
+            <div class="empty-state-text">When a book is currently borrowed by another person, you can place a reservation to borrow it next.</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="background: var(--bg-subtle); border-style: dashed;">
+  <div class="card-body" style="padding: 1rem 1.25rem;">
+    <div style="font-size: 0.85rem; color: var(--text-body);">
+      <strong>How reservations work:</strong> When a book is returned to the circulation desk, the system automatically marks the reservation as <em>Ready for Pickup</em> and sends an alert. The member has 3 days to collect the book.
+    </div>
+  </div>
+</div>
+{% endblock %}

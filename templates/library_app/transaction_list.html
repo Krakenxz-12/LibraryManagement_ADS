@@ -1,0 +1,299 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Borrow & Return Books{% endblock %}
+{% block breadcrumb %}Circulation Desk{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Borrow & Return Books</h1>
+    <p class="page-description">Issue books to students and staff or process returned library materials.</p>
+  </div>
+</div>
+
+<!-- Tab Switcher (Borrow vs Return vs History) -->
+<div class="tab-switch">
+  <button type="button" class="tab-btn active" id="btn-tab-borrow" onclick="switchCirculationTab('borrow')">Borrow a Book</button>
+  <button type="button" class="tab-btn" id="btn-tab-return" onclick="switchCirculationTab('return')">Return a Book</button>
+  <button type="button" class="tab-btn" id="btn-tab-history" onclick="switchCirculationTab('history')">All Records</button>
+</div>
+
+<!-- TAB 1: 3-STEP GUIDED BORROWING WORKFLOW -->
+<div id="tab-borrow-view">
+  <form action="{% url 'borrow_create' %}" method="POST">
+    {% csrf_token %}
+    <div class="circulation-grid">
+      
+      <!-- Left: Step Selection Cards -->
+      <div>
+        
+        <!-- Step 1: Choose Member -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Step 1: Select Member</h2>
+          </div>
+          <div class="card-body">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">Student or Faculty Member *</label>
+              <select name="member_id" id="borrow-member-select" class="form-control" required onchange="updateBorrowSummary()">
+                <option value="" disabled selected>Select a registered library member...</option>
+                {% for m in members %}
+                  <option value="{{ m.id }}" data-name="{{ m.full_name }}" data-code="{{ m.member_id }}" data-type="{{ m.get_membership_type_display }}">
+                    {{ m.full_name }} ({{ m.member_id }}) - {{ m.get_membership_type_display }}
+                  </option>
+                {% endfor %}
+              </select>
+              <div class="form-hint">Only active members without excessive overdue fines may borrow.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Choose Book -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">Step 2: Choose Book to Borrow</h2>
+          </div>
+          <div class="card-body">
+            <div class="form-group">
+              <label class="form-label">Available Book Title *</label>
+              <select name="book_id" id="borrow-book-select" class="form-control" required onchange="updateBorrowSummary()">
+                <option value="" disabled selected>Select a book from the available catalog...</option>
+                {% for b in available_books %}
+                  <option value="{{ b.id }}" data-title="{{ b.title }}" data-author="{{ b.author }}" data-shelf="{{ b.shelf_number|default:'General Stacks' }}">
+                    {{ b.title }} by {{ b.author }} ({{ b.available_copies }} copies available)
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label">Loan Duration</label>
+              <select name="borrow_days" id="borrow-days-select" class="form-control" onchange="updateBorrowSummary()">
+                <option value="7">7 Days (Short Loan)</option>
+                <option value="14" selected>14 Days (Standard Student Loan)</option>
+                <option value="30">30 Days (Faculty / Extended Loan)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Right: Summary Card & Final Confirmation -->
+      <div class="summary-card">
+        <h3 class="summary-title">Borrowing Summary</h3>
+        
+        <div class="summary-row">
+          <span class="summary-label">Borrower:</span>
+          <span class="summary-val" id="sum-member">None selected</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Member ID:</span>
+          <span class="summary-val" id="sum-member-id">-</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Book:</span>
+          <span class="summary-val" id="sum-book">None selected</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Shelf Location:</span>
+          <span class="summary-val" id="sum-shelf">-</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Date Borrowed:</span>
+          <span class="summary-val">{% now "M d, Y" %}</span>
+        </div>
+        <div class="summary-row" style="padding-top: 0.5rem; border-top: 1px dashed var(--border); margin-top: 0.5rem;">
+          <span class="summary-label" style="font-weight: 700; color: var(--text-heading);">Return Due Date:</span>
+          <span class="summary-val" id="sum-due-date" style="color: var(--primary); font-size: 0.95rem;">-</span>
+        </div>
+
+        <div style="font-size: 0.75rem; color: var(--text-muted); background: var(--bg-subtle); padding: 0.65rem 0.75rem; border-radius: var(--radius-sm); margin: 1.25rem 0;">
+          Pamantayan sa Multa: Ang aklat na naisauli lampas sa takdang petsa ay may bayad na ₱20.00 bawat araw (Standard overdue fee: ₱20.00/day).
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width: 100%;">
+          Confirm Borrowing
+        </button>
+      </div>
+
+    </div>
+  </form>
+</div>
+
+<!-- TAB 2: SIMPLE RETURN WORKFLOW -->
+<div id="tab-return-view" style="display: none;">
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Currently Borrowed Books Awaiting Return</h2>
+    </div>
+    <div class="table-responsive">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Member</th>
+            <th>Book Title</th>
+            <th>Date Borrowed</th>
+            <th>Return Due Date</th>
+            <th>Status</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in transactions %}
+          {% if txn.status == 'BORROWED' %}
+          <tr>
+            <td>
+              <strong>{{ txn.member.full_name }}</strong><br>
+              <span style="font-size: 0.75rem; color: var(--text-muted);">{{ txn.member.member_id }}</span>
+            </td>
+            <td>
+              <div style="font-weight: 600; color: var(--text-heading);">{{ txn.book.title }}</div>
+              <span style="font-size: 0.75rem; color: var(--text-muted);">{{ txn.book.author }}</span>
+            </td>
+            <td>{{ txn.issue_date|date:"M d, Y" }}</td>
+            <td>
+              <span style="font-weight: 600; {% if txn.is_currently_overdue %}color: #b91c1c;{% endif %}">
+                {{ txn.due_date|date:"M d, Y" }}
+              </span>
+            </td>
+            <td>
+              {% if txn.is_currently_overdue %}
+                <span class="status-badge overdue">{{ txn.days_overdue }} Days Late</span>
+              {% else %}
+                <span class="status-badge borrowed">Within Loan Period</span>
+              {% endif %}
+            </td>
+            <td style="text-align: right;">
+              <a href="{% url 'return_process' txn.id %}" class="btn btn-primary btn-sm" onclick="return confirm('Process return for {{ txn.book.title }}?')">
+                Return Book
+              </a>
+            </td>
+          </tr>
+          {% endif %}
+          {% empty %}
+          <tr>
+            <td colspan="6" class="empty-state">
+              <div class="empty-state-title">No books currently borrowed</div>
+              <div class="empty-state-text">All library materials have been returned.</div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- TAB 3: ALL CIRCULATION RECORDS -->
+<div id="tab-history-view" style="display: none;">
+  <div class="card">
+    <div class="card-header">
+      <h2 class="card-title">Circulation History</h2>
+    </div>
+    <div class="table-responsive">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Transaction ID</th>
+            <th>Member</th>
+            <th>Book Title</th>
+            <th>Issued On</th>
+            <th>Due / Returned</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for txn in transactions %}
+          <tr>
+            <td style="font-family: monospace; font-size: 0.8rem;">{{ txn.transaction_code }}</td>
+            <td><strong>{{ txn.member.full_name }}</strong></td>
+            <td>{{ txn.book.title }}</td>
+            <td>{{ txn.issue_date|date:"M d, Y" }}</td>
+            <td>
+              {% if txn.return_date %}
+                Returned: {{ txn.return_date|date:"M d, Y" }}
+              {% else %}
+                Due: {{ txn.due_date|date:"M d, Y" }}
+              {% endif %}
+            </td>
+            <td>
+              {% if txn.status == 'BORROWED' %}
+                {% if txn.is_currently_overdue %}
+                  <span class="status-badge overdue">Overdue</span>
+                {% else %}
+                  <span class="status-badge borrowed">Borrowed</span>
+                {% endif %}
+              {% elif txn.status == 'RETURNED' %}
+                <span class="status-badge available">Returned</span>
+              {% else %}
+                <span class="status-badge neutral">{{ txn.status }}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="6" class="empty-state">
+              <div class="empty-state-title">No history found</div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function switchCirculationTab(tab) {
+  const borrowView = document.getElementById('tab-borrow-view');
+  const returnView = document.getElementById('tab-return-view');
+  const historyView = document.getElementById('tab-history-view');
+  
+  const btnBorrow = document.getElementById('btn-tab-borrow');
+  const btnReturn = document.getElementById('btn-tab-return');
+  const btnHistory = document.getElementById('btn-tab-history');
+
+  borrowView.style.display = (tab === 'borrow') ? 'block' : 'none';
+  returnView.style.display = (tab === 'return') ? 'block' : 'none';
+  historyView.style.display = (tab === 'history') ? 'block' : 'none';
+
+  btnBorrow.classList.toggle('active', tab === 'borrow');
+  btnReturn.classList.toggle('active', tab === 'return');
+  btnHistory.classList.toggle('active', tab === 'history');
+}
+
+function updateBorrowSummary() {
+  const memberSel = document.getElementById('borrow-member-select');
+  const bookSel = document.getElementById('borrow-book-select');
+  const daysSel = document.getElementById('borrow-days-select');
+
+  const selectedMember = memberSel.options[memberSel.selectedIndex];
+  if (selectedMember && selectedMember.value) {
+    document.getElementById('sum-member').textContent = selectedMember.getAttribute('data-name');
+    document.getElementById('sum-member-id').textContent = selectedMember.getAttribute('data-code');
+  }
+
+  const selectedBook = bookSel.options[bookSel.selectedIndex];
+  if (selectedBook && selectedBook.value) {
+    document.getElementById('sum-book').textContent = selectedBook.getAttribute('data-title');
+    document.getElementById('sum-shelf').textContent = selectedBook.getAttribute('data-shelf');
+  }
+
+  const days = parseInt(daysSel.value || '14', 10);
+  const targetDate = new Date();
+  targetDate.setDate(targetDate.getDate() + days);
+  const options = { year: 'numeric', month: 'short', day: 'numeric' };
+  document.getElementById('sum-due-date').textContent = targetDate.toLocaleDateString(undefined, options);
+}
+
+// Check URL param for tab
+document.addEventListener('DOMContentLoaded', function() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('tab') === 'return') {
+    switchCirculationTab('return');
+  }
+  updateBorrowSummary();
+});
+</script>
+{% endblock %}

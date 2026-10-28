@@ -1,0 +1,195 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Reports & Statistics{% endblock %}
+{% block breadcrumb %}Library Reports{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Library Reports</h1>
+    <p class="page-description">Generate circulation summaries, member activity logs, and export official reports to PDF or Excel.</p>
+  </div>
+</div>
+
+<!-- Tab Switcher -->
+<div class="tab-switch">
+  <button type="button" class="tab-btn active" id="btn-tab-export" onclick="switchReportsTab('export')">Generate Reports</button>
+  <button type="button" class="tab-btn" id="btn-tab-stats" onclick="switchReportsTab('stats')">Circulation Statistics</button>
+</div>
+
+<!-- TAB 1: 4 CLEAR REPORT GENERATORS -->
+<div id="tab-export-view">
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; margin-bottom: 2rem;">
+    
+    <!-- Report 1 -->
+    <div class="card" style="margin-bottom: 0;">
+      <div class="card-header">
+        <h2 class="card-title">1. Borrowed & Overdue Books</h2>
+      </div>
+      <div class="card-body">
+        <p style="font-size: 0.825rem; color: var(--text-muted); margin-bottom: 1.25rem; line-height: 1.4;">
+          Complete roster of books currently on loan, borrower names, due dates, and assessed late fees.
+        </p>
+        <div style="display: flex; gap: 0.5rem;">
+          <a href="{% url 'export_report' %}?type=borrowed_overdue&format=excel" class="btn btn-secondary btn-sm" style="flex: 1;">
+            Excel (.xlsx)
+          </a>
+          <a href="{% url 'export_report' %}?type=borrowed_overdue&format=pdf" class="btn btn-primary btn-sm" style="flex: 1;">
+            Download PDF
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report 2 -->
+    <div class="card" style="margin-bottom: 0;">
+      <div class="card-header">
+        <h2 class="card-title">2. Most Borrowed Books</h2>
+      </div>
+      <div class="card-body">
+        <p style="font-size: 0.825rem; color: var(--text-muted); margin-bottom: 1.25rem; line-height: 1.4;">
+          Rankings of the most popular titles and academic textbooks by semester and annual checkout volume.
+        </p>
+        <div style="display: flex; gap: 0.5rem;">
+          <a href="{% url 'export_report' %}?type=most_borrowed&format=excel" class="btn btn-secondary btn-sm" style="flex: 1;">
+            Excel (.xlsx)
+          </a>
+          <a href="{% url 'export_report' %}?type=most_borrowed&format=pdf" class="btn btn-primary btn-sm" style="flex: 1;">
+            Download PDF
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report 3 -->
+    <div class="card" style="margin-bottom: 0;">
+      <div class="card-header">
+        <h2 class="card-title">3. Member Activity & Status</h2>
+      </div>
+      <div class="card-body">
+        <p style="font-size: 0.825rem; color: var(--text-muted); margin-bottom: 1.25rem; line-height: 1.4;">
+          Directory of registered students and faculty with membership status, contact information, and account balances.
+        </p>
+        <div style="display: flex; gap: 0.5rem;">
+          <a href="{% url 'export_report' %}?type=members_status&format=excel" class="btn btn-secondary btn-sm" style="flex: 1;">
+            Excel (.xlsx)
+          </a>
+          <a href="{% url 'export_report' %}?type=members_status&format=pdf" class="btn btn-primary btn-sm" style="flex: 1;">
+            Download PDF
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report 4 -->
+    <div class="card" style="margin-bottom: 0;">
+      <div class="card-header">
+        <h2 class="card-title">4. Transaction Summary Journal</h2>
+      </div>
+      <div class="card-body">
+        <p style="font-size: 0.825rem; color: var(--text-muted); margin-bottom: 1.25rem; line-height: 1.4;">
+          Log of all checkouts, returns, attending staff members, and daily circulation velocity.
+        </p>
+        <div style="display: flex; gap: 0.5rem;">
+          <a href="{% url 'export_report' %}?type=transactions_summary&format=excel" class="btn btn-secondary btn-sm" style="flex: 1;">
+            Excel (.xlsx)
+          </a>
+          <a href="{% url 'export_report' %}?type=transactions_summary&format=pdf" class="btn btn-primary btn-sm" style="flex: 1;">
+            Download PDF
+          </a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- TAB 2: CIRCULATION STATISTICS -->
+<div id="tab-stats-view" style="display: none;">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+    
+    <!-- Top Borrowed Books Table -->
+    <div class="card" style="margin-bottom: 0;">
+      <div class="card-header">
+        <h2 class="card-title">Top Most Borrowed Books</h2>
+      </div>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Category</th>
+              <th style="text-align: right;">Times Borrowed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for b in most_borrowed %}
+            <tr>
+              <td>
+                <div style="font-weight: 600;">{{ b.title }}</div>
+                <span style="font-size: 0.75rem; color: var(--text-muted);">{{ b.author }}</span>
+              </td>
+              <td><span class="status-badge neutral">{{ b.category.name|default:"General" }}</span></td>
+              <td style="text-align: right; font-weight: 700; color: var(--primary);">{{ b.borrow_count }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="3" class="empty-state">
+                <div class="empty-state-title">No checkout records yet</div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Categories Breakdown Table -->
+    <div class="card" style="margin-bottom: 0;">
+      <div class="card-header">
+        <h2 class="card-title">Catalog by Category</h2>
+      </div>
+      <div class="table-responsive">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th style="text-align: right;">Total Titles</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for cat in category_counts %}
+            <tr>
+              <td><strong>{{ cat.name }}</strong></td>
+              <td style="text-align: right; font-weight: 700;">{{ cat.book_count }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="2" class="empty-state">
+                <div class="empty-state-title">No categories available</div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function switchReportsTab(tab) {
+  const exportView = document.getElementById('tab-export-view');
+  const statsView = document.getElementById('tab-stats-view');
+  const btnExport = document.getElementById('btn-tab-export');
+  const btnStats = document.getElementById('btn-tab-stats');
+
+  exportView.style.display = (tab === 'export') ? 'block' : 'none';
+  statsView.style.display = (tab === 'stats') ? 'block' : 'none';
+
+  btnExport.classList.toggle('active', tab === 'export');
+  btnStats.classList.toggle('active', tab === 'stats');
+}
+</script>
+{% endblock %}
