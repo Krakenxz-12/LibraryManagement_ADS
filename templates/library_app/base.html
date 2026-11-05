@@ -187,8 +187,19 @@
         <span>/</span>
         <span style="color: var(--text-heading); font-weight: 500;">{% block breadcrumb %}Overview{% endblock %}</span>
       </div>
-      <div style="font-size: 0.8rem; color: var(--text-muted);">
-        {% now "l, F d, Y" %}
+      <div class="topbar-actions">
+        <a href="{% url 'notification_list' %}" class="topbar-notification-link"
+           aria-label="Notifications{% if unread_notifications_count %}, {{ unread_notifications_count }} unread{% endif %}"
+           title="Notifications{% if unread_notifications_count %} ({{ unread_notifications_count }} unread){% endif %}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+            <path d="M10 21h4" />
+          </svg>
+          {% if unread_notifications_count %}
+            <span class="notification-count-badge">{% if unread_notifications_count > 99 %}99+{% else %}{{ unread_notifications_count }}{% endif %}</span>
+          {% endif %}
+        </a>
+        <div class="topbar-date">{% now "l, F d, Y" %}</div>
       </div>
     </header>
     {% endif %}

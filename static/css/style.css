@@ -296,6 +296,77 @@ a:hover {
   color: var(--primary);
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.topbar-date {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.topbar-notification-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0.25rem;
+  text-decoration: none;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.topbar-notification-link:hover {
+  color: var(--primary);
+  background: #eff6ff;
+  border-color: var(--primary);
+}
+
+.topbar-notification-link svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.notification-count-badge {
+  position: absolute;
+  top: -0.2rem;
+  right: -0.3rem;
+  min-width: 0.85rem;
+  height: 0.85rem;
+  padding: 0 0.15rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: #dc2626;
+  border: 1px solid #fff;
+  border-radius: 999px;
+  font-size: 0.55rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@media (max-width: 600px) {
+  .app-topbar {
+    padding: 0.75rem 1rem;
+  }
+
+  .topbar-actions {
+    gap: 0.5rem;
+  }
+
+  .topbar-date {
+    display: none;
+  }
+}
+
 .app-content {
   padding: 1.75rem 2rem;
   max-width: 1240px;
