@@ -10,7 +10,15 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
+import os
+from decimal import Decimal
 from pathlib import Path
+
+try:  # optional: load a local .env file (see .env.example)
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / '.env')
+except ImportError:
+    pass
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -62,6 +70,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'library_app.context_processors.library_rules',
             ],
         },
     },
@@ -73,12 +82,26 @@ WSGI_APPLICATION = 'library_core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# MySQL is used when DB_NAME is set (see .env.example); otherwise falls back to SQLite for quick local runs.
+if os.environ.get('DB_NAME'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.mysql',
+            'NAME': os.environ['DB_NAME'],
+            'USER': os.environ.get('DB_USER', 'root'),
+            'PASSWORD': os.environ.get('DB_PASSWORD', ''),
+            'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
+            'PORT': os.environ.get('DB_PORT', '3306'),
+            'OPTIONS': {'charset': 'utf8mb4'},
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -105,7 +128,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Manila'
 
 USE_I18N = True
 
@@ -127,6 +150,13 @@ LOGIN_REDIRECT_URL = 'dashboard'
 LOGOUT_REDIRECT_URL = 'login'
 
 # Library Policy Configuration
+# Initial defaults only: they seed the Library Settings row the first time it is needed.
+# After that the Admin changes them in the app (System Settings), not here.
 BORROW_PERIOD_DAYS = 14
-DAILY_FINE_RATE = 0.50  # $0.50 per day overdue
+DAILY_FINE_RATE = Decimal('20.00')  # PHP 20.00 per day overdue
+
+PICKUP_HOLD_HOURS = 24     # approved requests / ready reservations must be collected within this time
+WEEKLY_BORROW_LIMIT = 5   # max books a member can collect per calendar week (Mon-Sun)
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

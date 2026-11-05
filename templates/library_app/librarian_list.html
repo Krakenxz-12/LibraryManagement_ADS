@@ -1,0 +1,144 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Librarian Management{% endblock %}
+{% block breadcrumb %}Librarian Management{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Librarian Management</h1>
+    <p class="page-description">Create and manage librarian accounts. Only administrators can see this page.</p>
+  </div>
+  <button type="button" class="btn btn-primary" onclick="openModal('add-librarian-modal')">Add Librarian</button>
+</div>
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Librarian</th>
+          <th>Contact</th>
+          <th>Status</th>
+          <th>Last Login</th>
+          <th>Transactions Handled</th>
+          <th style="text-align: right;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in librarians %}
+        <tr>
+          <td>
+            <strong>{{ l.get_full_name|default:l.username }}</strong><br>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">@{{ l.username }} • joined {{ l.date_joined|date:"M d, Y" }}</span>
+          </td>
+          <td>{{ l.email|default:"-" }}<br><span style="font-size: 0.75rem; color: var(--text-muted);">{{ l.profile.phone|default:"" }}</span></td>
+          <td>{% if l.is_active %}<span class="status-badge available">Active</span>{% else %}<span class="status-badge neutral">Deactivated</span>{% endif %}</td>
+          <td>{{ l.last_login|date:"M d, Y h:i A"|default:"Never" }}</td>
+          <td>{{ l.handled }}</td>
+          <td style="text-align: right;">
+            <div style="display: inline-flex; gap: 0.4rem; flex-wrap: wrap; justify-content: flex-end;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openModal('edit-lib-{{ l.id }}')">Edit</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openModal('reset-lib-{{ l.id }}')">Reset Password</button>
+              <form action="{% url 'librarian_toggle' l.id %}" method="POST">
+                {% csrf_token %}
+                <button type="submit" class="btn {% if l.is_active %}btn-danger{% else %}btn-primary{% endif %} btn-sm" onclick="return confirm('{% if l.is_active %}Deactivate{% else %}Activate{% endif %} {{ l.username|escapejs }}?')">
+                  {% if l.is_active %}Deactivate{% else %}Activate{% endif %}
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="empty-state"><div class="empty-state-title">No librarian accounts yet</div><div class="empty-state-text">Use "Add Librarian" to create the first one.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Add librarian -->
+<div id="add-librarian-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Add Librarian</h3>
+      <button type="button" onclick="closeModal('add-librarian-modal')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">×</button>
+    </div>
+    <form action="{% url 'librarian_create' %}" method="POST">
+      {% csrf_token %}
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">First Name *</label><input type="text" name="first_name" class="form-control" required></div>
+          <div class="form-group"><label class="form-label">Last Name</label><input type="text" name="last_name" class="form-control"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Email</label><input type="email" name="email" class="form-control"></div>
+          <div class="form-group"><label class="form-label">Phone</label><input type="text" name="phone" class="form-control"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Username *</label><input type="text" name="username" class="form-control" required autocomplete="off"></div>
+          <div class="form-group"><label class="form-label">Password *</label><input type="password" name="password" class="form-control" required autocomplete="new-password"></div>
+        </div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">Password must be at least 8 characters and not too common or all numbers.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('add-librarian-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create Account</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% for l in librarians %}
+<!-- Edit {{ l.username }} -->
+<div id="edit-lib-{{ l.id }}" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Edit @{{ l.username }}</h3>
+      <button type="button" onclick="closeModal('edit-lib-{{ l.id }}')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">×</button>
+    </div>
+    <form action="{% url 'librarian_update' l.id %}" method="POST">
+      {% csrf_token %}
+      <div class="modal-body">
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">First Name *</label><input type="text" name="first_name" class="form-control" value="{{ l.first_name }}" required></div>
+          <div class="form-group"><label class="form-label">Last Name</label><input type="text" name="last_name" class="form-control" value="{{ l.last_name }}"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Email</label><input type="email" name="email" class="form-control" value="{{ l.email }}"></div>
+          <div class="form-group"><label class="form-label">Phone</label><input type="text" name="phone" class="form-control" value="{{ l.profile.phone|default:'' }}"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('edit-lib-{{ l.id }}')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Reset password {{ l.username }} -->
+<div id="reset-lib-{{ l.id }}" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Reset Password: @{{ l.username }}</h3>
+      <button type="button" onclick="closeModal('reset-lib-{{ l.id }}')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">×</button>
+    </div>
+    <form action="{% url 'librarian_reset_password' l.id %}" method="POST">
+      {% csrf_token %}
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">New Password</label>
+          <input type="password" name="password" class="form-control" autocomplete="new-password" placeholder="Leave blank to generate a temporary password">
+        </div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">A generated password is shown once after you save. The librarian is signed out of any open session.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('reset-lib-{{ l.id }}')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Reset Password</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% endblock %}

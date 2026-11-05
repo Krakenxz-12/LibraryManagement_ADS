@@ -1,0 +1,112 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}My Requests{% endblock %}
+{% block breadcrumb %}My Requests{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">My Requests</h1>
+    <p class="page-description">Track your borrow requests, books waiting for pickup, and your weekly borrowing allowance.</p>
+  </div>
+  <a href="{% url 'book_list' %}" class="btn btn-primary">Find a Book</a>
+</div>
+
+<!-- Weekly allowance + counters -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">Weekly Borrowing Allowance</div>
+      <div style="font-size: 1.6rem; font-weight: 700; color: var(--text-heading);">{{ allowance.used }} <span style="font-size: 1rem; color: var(--text-muted);">/ {{ allowance.limit }} books used</span></div>
+      <div style="font-size: 0.775rem; color: var(--text-muted);">{{ allowance.remaining }} remaining this week (resets Monday)</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">Currently Borrowed</div>
+      <div style="font-size: 1.6rem; font-weight: 700; color: var(--text-heading);">{{ borrowed_count }}</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">Active Reservations</div>
+      <div style="font-size: 1.6rem; font-weight: 700; color: var(--text-heading);">{{ active_reservation_total }}</div>
+    </div>
+  </div>
+</div>
+
+{% if ready_reservations %}
+<div class="card" style="border-color: var(--primary);">
+  <div class="card-header"><h2 class="card-title">Reserved Books Ready for Pickup</h2></div>
+  <div class="card-body">
+    {% for res in ready_reservations %}
+    <div style="padding: 0.5rem 0; font-size: 0.875rem;">
+      <strong>{{ res.book.title }}</strong> is being held for you at shelf {{ res.book.shelf_number }}.
+      Collect it before <strong>{{ res.pickup_deadline|date:"M d, h:i A" }}</strong> ({{ res.pickup_deadline|timeuntil }} left).
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header"><h2 class="card-title">Borrow Requests</h2></div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Request</th>
+          <th>Book</th>
+          <th>Requested</th>
+          <th>Status</th>
+          <th style="text-align: right;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in requests %}
+        <tr>
+          <td><span style="font-family: monospace; font-size: 0.8rem; font-weight: 600;">{{ r.request_code }}</span></td>
+          <td>
+            <a href="{% url 'book_detail' r.book.id %}" style="font-weight: 600; color: var(--text-heading);">{{ r.book.title }}</a><br>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">Shelf {{ r.book.shelf_number }}</span>
+          </td>
+          <td>{{ r.requested_at|date:"M d, h:i A" }}</td>
+          <td>
+            {% if r.status == 'PENDING' %}
+              <span class="status-badge reserved">Pending approval</span>
+            {% elif r.status == 'APPROVED' %}
+              <span class="status-badge borrowed">Awaiting pickup</span>
+              <div style="font-size: 0.75rem; color: #b45309; font-weight: 600; margin-top: 0.2rem;">Collect by {{ r.pickup_deadline|date:"M d, h:i A" }} ({{ r.pickup_deadline|timeuntil }} left)</div>
+            {% elif r.status == 'COLLECTED' %}
+              <span class="status-badge available">Borrowed</span>
+            {% elif r.status == 'REJECTED' %}
+              <span class="status-badge overdue">Rejected</span>
+              {% if r.reject_reason %}<div style="font-size: 0.75rem; color: var(--text-muted);">{{ r.reject_reason }}</div>{% endif %}
+            {% elif r.status == 'EXPIRED' %}
+              <span class="status-badge neutral">Expired – not collected in time</span>
+            {% else %}
+              <span class="status-badge neutral">Cancelled</span>
+            {% endif %}
+          </td>
+          <td style="text-align: right;">
+            {% if r.status == 'PENDING' or r.status == 'APPROVED' %}
+            <form action="{% url 'request_cancel' r.id %}" method="POST" style="display: inline;">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Cancel this request?')">Cancel</button>
+            </form>
+            {% else %}<span style="color: var(--text-light);">-</span>{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="5" class="empty-state">
+            <div class="empty-state-title">No borrow requests yet</div>
+            <div class="empty-state-text">Open a book that is available and choose "Request to Borrow".</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

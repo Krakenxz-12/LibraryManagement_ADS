@@ -30,9 +30,20 @@ urlpatterns = [
     path('reservations/', views.reservation_list_view, name='reservation_list'),
     path('books/<int:book_id>/reserve/', views.reserve_book_view, name='reserve_book'),
     path('reservations/<int:reservation_id>/cancel/', views.cancel_reservation_view, name='cancel_reservation'),
+    path('reservations/<int:reservation_id>/pickup/', views.reservation_pickup_view, name='reservation_pickup'),
+
+    # Borrow requests (request -> approve -> pickup -> borrowed)
+    path('requests/', views.borrow_request_list_view, name='borrow_request_list'),
+    path('my-requests/', views.my_requests_view, name='my_requests'),
+    path('books/<int:book_id>/request-borrow/', views.request_borrow_view, name='request_borrow'),
+    path('requests/<int:request_id>/approve/', views.request_approve_view, name='request_approve'),
+    path('requests/<int:request_id>/reject/', views.request_reject_view, name='request_reject'),
+    path('requests/<int:request_id>/pickup/', views.request_pickup_view, name='request_pickup'),
+    path('requests/<int:request_id>/cancel/', views.request_cancel_view, name='request_cancel'),
 
     # Module 5: Fines & Payments
     path('fines/', views.fines_list_view, name='fines_list'),
+    path('my-fines/', views.my_fines_view, name='my_fines'),
     path('transactions/<int:transaction_id>/pay-fine/', views.process_fine_payment_view, name='process_fine_payment'),
     path('receipts/<str:receipt_number>/', views.receipt_view, name='receipt_view'),
     path('receipts/<str:receipt_number>/pdf/', views.receipt_download_pdf_view, name='receipt_download_pdf'),
@@ -43,6 +54,17 @@ urlpatterns = [
 
     # Module 7 & 10: Users, Backups & Security
     path('management/users/', views.user_management_view, name='user_management'),
+
+    # Admin: system settings, categories, librarian accounts
+    path('management/settings/', views.system_settings_view, name='system_settings'),
+    path('management/settings/categories/new/', views.category_create_view, name='category_create'),
+    path('management/settings/categories/<int:category_id>/edit/', views.category_update_view, name='category_update'),
+    path('management/settings/categories/<int:category_id>/delete/', views.category_delete_view, name='category_delete'),
+    path('management/librarians/', views.librarian_list_view, name='librarian_list'),
+    path('management/librarians/new/', views.librarian_create_view, name='librarian_create'),
+    path('management/librarians/<int:user_id>/edit/', views.librarian_update_view, name='librarian_update'),
+    path('management/librarians/<int:user_id>/toggle/', views.librarian_toggle_active_view, name='librarian_toggle'),
+    path('management/librarians/<int:user_id>/reset-password/', views.librarian_reset_password_view, name='librarian_reset_password'),
     path('management/backup/download/', views.backup_download_view, name='backup_download'),
     path('management/backup/restore/', views.backup_restore_view, name='backup_restore'),
 

@@ -1,8 +1,51 @@
+from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
+
+# A loan that has not been returned yet (status flips to OVERDUE automatically)
+ACTIVE_LOAN_STATUSES = ['BORROWED', 'OVERDUE']
+
+
+class LibrarySettings(models.Model):
+    """Library rules edited by the Admin. One row only (pk=1), created on first use.
+    Changes apply to NEW loans/calculations; existing loans keep their due date and fine rate."""
+    daily_fine_rate = models.DecimalField(
+        'Fine per overdue day (PHP)', max_digits=8, decimal_places=2, default=Decimal('20.00'),
+        validators=[MinValueValidator(Decimal('0.00')), MaxValueValidator(Decimal('10000.00'))],
+    )
+    weekly_borrow_limit = models.PositiveSmallIntegerField(
+        'Books a member may collect per week', default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(50)],
+    )
+    borrow_period_days = models.PositiveSmallIntegerField(
+        'Borrowing duration (days)', default=14,
+        validators=[MinValueValidator(1), MaxValueValidator(365)],
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+
+    class Meta:
+        verbose_name_plural = 'Library settings'
+
+    def save(self, *args, **kwargs):
+        self.pk = 1  # singleton
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def get(cls):
+        obj, _ = cls.objects.get_or_create(pk=1, defaults={
+            'daily_fine_rate': Decimal(str(getattr(settings, 'DAILY_FINE_RATE', '20.00'))),
+            'weekly_borrow_limit': getattr(settings, 'WEEKLY_BORROW_LIMIT', 5),
+            'borrow_period_days': getattr(settings, 'BORROW_PERIOD_DAYS', 14),
+        })
+        return obj
+
+    def __str__(self):
+        return "Library settings"
 
 
 class UserProfile(models.Model):
@@ -51,6 +94,13 @@ class Member(models.Model):
         ('SUSPENDED', 'Suspended'),
     ]
 
+    MEMBERSHIP_TYPE_CHOICES = [
+        ('STUDENT', 'Student'),
+        ('FACULTY', 'Faculty'),
+        ('STAFF', 'Staff'),
+        ('COMMUNITY', 'Community / External'),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='member_account')
     member_id = models.CharField(max_length=20, unique=True, db_index=True)
     first_name = models.CharField(max_length=100)
@@ -59,6 +109,7 @@ class Member(models.Model):
     phone = models.CharField(max_length=20)
     address = models.TextField(blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
+    membership_type = models.CharField(max_length=15, choices=MEMBERSHIP_TYPE_CHOICES, default='STUDENT')
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='ACTIVE')
     balance = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     created_at = models.DateTimeField(auto_now_add=True)
@@ -76,12 +127,12 @@ class Member(models.Model):
 
     @property
     def active_borrows_count(self):
-        return self.borrows.filter(status='BORROWED').count()
+        return self.borrows.filter(status__in=ACTIVE_LOAN_STATUSES).count()
 
     @property
     def overdue_borrows_count(self):
-        today = timezone.now().date()
-        return self.borrows.filter(status='BORROWED', due_date__lt=today).count()
+        today = timezone.localdate()
+        return self.borrows.filter(status__in=ACTIVE_LOAN_STATUSES, due_date__lt=today).count()
 
     @classmethod
     def generate_member_id(cls):
@@ -143,19 +194,18 @@ class Book(models.Model):
         return f"{self.title} by {self.author} ({self.isbn})"
 
     def update_availability_status(self):
-        if self.status in ['LOST', 'UNDER_REPAIR']:
-            return
-        if self.available_copies <= 0:
-            if self.reservations.filter(status='PENDING').exists():
-                self.status = 'RESERVED'
-            else:
-                self.status = 'BORROWED'
-        else:
-            if self.reservations.filter(status='PENDING').exists():
-                self.status = 'RESERVED'
-            else:
+        """Recompute status from stock/reservations and save status AND stock count."""
+        if self.status not in ['LOST', 'UNDER_REPAIR']:
+            if self.available_copies > 0:
                 self.status = 'AVAILABLE'
-        self.save(update_fields=['status'])
+            else:
+                # No free copy: it is either on loan, or being held for someone to pick up
+                waiting = (
+                    self.reservations.filter(status__in=['PENDING', 'READY']).exists()
+                    or self.borrow_requests.filter(status='APPROVED').exists()
+                )
+                self.status = 'RESERVED' if waiting else 'BORROWED'
+        self.save(update_fields=['status', 'available_copies'])
 
 
 class BorrowTransaction(models.Model):
@@ -175,6 +225,7 @@ class BorrowTransaction(models.Model):
     return_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='BORROWED')
     fine_amount = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('0.00'))
+    daily_fine_rate = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('20.00'))  # rate in force when the loan was created
     fine_paid = models.BooleanField(default=False)
     reading_progress = models.PositiveIntegerField(default=0)  # e.g. 6% or 0% reading completion
     notes = models.TextField(blank=True)
@@ -189,20 +240,22 @@ class BorrowTransaction(models.Model):
 
     @property
     def is_currently_overdue(self):
-        today = timezone.now().date()
-        if self.status == 'BORROWED' and self.due_date < today:
+        today = timezone.localdate()
+        if self.status in ACTIVE_LOAN_STATUSES and self.due_date < today:
             return True
         return False
 
     @property
     def days_overdue(self):
-        today = timezone.now().date()
+        today = timezone.localdate()
         comp_date = self.return_date if self.return_date else today
         if comp_date > self.due_date:
             return (comp_date - self.due_date).days
         return 0
 
-    def compute_fine(self, daily_rate=Decimal('20.00')):
+    def compute_fine(self, daily_rate=None):
+        if daily_rate is None:
+            daily_rate = self.daily_fine_rate  # snapshot taken at checkout, so later rate changes don't alter it
         overdue_days = self.days_overdue
         if overdue_days > 0:
             return Decimal(str(overdue_days)) * daily_rate
@@ -221,6 +274,7 @@ class Reservation(models.Model):
         ('READY', 'Ready for Pickup'),
         ('FULFILLED', 'Fulfilled'),
         ('CANCELLED', 'Cancelled'),
+        ('EXPIRED', 'Expired'),
     ]
 
     reservation_code = models.CharField(max_length=30, unique=True, blank=True)
@@ -229,6 +283,7 @@ class Reservation(models.Model):
     reservation_date = models.DateTimeField(auto_now_add=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     notified_at = models.DateTimeField(null=True, blank=True)
+    pickup_deadline = models.DateTimeField(null=True, blank=True)  # set when the copy is held (READY)
     notes = models.TextField(blank=True)
 
     class Meta:
@@ -243,6 +298,44 @@ class Reservation(models.Model):
 
     def __str__(self):
         return f"{self.reservation_code}: {self.book.title} reserved by {self.member.full_name} ({self.status})"
+
+
+class BorrowRequest(models.Model):
+    """Member asks to borrow an available book.
+    PENDING -> APPROVED (copy held, 24h to collect) -> COLLECTED (loan starts)
+    or REJECTED / EXPIRED / CANCELLED."""
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Awaiting Pickup'),
+        ('COLLECTED', 'Borrowed'),
+        ('REJECTED', 'Rejected'),
+        ('EXPIRED', 'Expired'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+
+    request_code = models.CharField(max_length=30, unique=True, null=True, blank=True)
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='borrow_requests')
+    book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='borrow_requests')
+    status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='PENDING', db_index=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    handled_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='handled_borrow_requests')
+    handled_at = models.DateTimeField(null=True, blank=True)
+    pickup_deadline = models.DateTimeField(null=True, blank=True)
+    collected_at = models.DateTimeField(null=True, blank=True)
+    reject_reason = models.TextField(blank=True)
+    transaction = models.OneToOneField(BorrowTransaction, on_delete=models.SET_NULL, null=True, blank=True, related_name='source_request')
+
+    class Meta:
+        ordering = ['-requested_at']
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if not self.request_code:
+            self.request_code = f"REQ-{timezone.localdate().year}-{self.pk:04d}"
+            BorrowRequest.objects.filter(pk=self.pk).update(request_code=self.request_code)
+
+    def __str__(self):
+        return f"{self.request_code}: {self.book.title} requested by {self.member.full_name} ({self.status})"
 
 
 class FinePayment(models.Model):
@@ -267,7 +360,7 @@ class FinePayment(models.Model):
         ordering = ['-payment_date']
 
     def __str__(self):
-        return f"{self.receipt_number} - ${self.amount_paid} ({self.member.full_name})"
+        return f"{self.receipt_number} - ₱{self.amount_paid} ({self.member.full_name})"
 
     @classmethod
     def generate_receipt_number(cls):

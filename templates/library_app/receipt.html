@@ -6,7 +6,7 @@
 {% block content %}
 <div class="page-header" style="max-width: 620px; margin: 0 auto 1.5rem;">
   <div>
-    <a href="{% url 'fines_list' %}" style="font-size: 0.825rem; color: var(--primary); font-weight: 600;">← Back to Fines & Payments</a>
+    <a href="{% if user.profile.is_member %}{% url 'my_fines' %}{% else %}{% url 'fines_list' %}{% endif %}" style="font-size: 0.825rem; color: var(--primary); font-weight: 600;">← Back to {% if user.profile.is_member %}My Fines & Receipts{% else %}Fines & Payments{% endif %}</a>
     <h1 class="page-title" style="margin-top: 0.4rem;">Official Payment Receipt</h1>
   </div>
   <div style="display: flex; gap: 0.5rem;">

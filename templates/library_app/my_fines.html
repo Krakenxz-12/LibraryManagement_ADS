@@ -1,0 +1,143 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}My Fines & Receipts{% endblock %}
+{% block breadcrumb %}My Fines & Receipts{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">My Fines & Receipts</h1>
+    <p class="page-description">See any late fees you owe and your payment history. Pay at the library circulation desk.</p>
+  </div>
+</div>
+
+{% if not member %}
+<div class="card">
+  <div class="card-body">
+    <div class="empty-state-title">No member record linked to your account</div>
+    <div class="empty-state-text">Please ask a librarian to link your account to your library membership.</div>
+  </div>
+</div>
+{% else %}
+
+<!-- Summary -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">Total Amount Due</div>
+      <div style="font-size: 1.6rem; font-weight: 700; {% if total_outstanding > 0 %}color: #b91c1c;{% else %}color: var(--text-heading);{% endif %}">₱{{ total_outstanding|floatformat:2 }}</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">Unpaid Fines</div>
+      <div style="font-size: 1.6rem; font-weight: 700; color: var(--text-heading);">{{ unpaid_fines|length }}</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div>
+      <div style="font-size: 0.8rem; color: var(--text-muted);">Total Paid</div>
+      <div style="font-size: 1.6rem; font-weight: 700; color: var(--text-heading);">₱{{ total_paid|floatformat:2 }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Unpaid fines -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Fines</h2>
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Book</th>
+          <th>Due Date</th>
+          <th>Days Late</th>
+          <th>Fine</th>
+          <th>Paid</th>
+          <th>Balance</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in fine_rows %}
+        <tr>
+          <td>
+            <div style="font-weight: 500;">{{ row.txn.book.title }}</div>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">{{ row.txn.transaction_code }}</span>
+          </td>
+          <td>{{ row.txn.due_date|date:"M d, Y" }}</td>
+          <td>{{ row.txn.days_overdue }}</td>
+          <td>₱{{ row.txn.fine_amount }}</td>
+          <td>₱{{ row.paid }}</td>
+          <td><strong>₱{{ row.outstanding }}</strong></td>
+          <td>
+            {% if row.outstanding > 0 %}
+              {% if row.txn.status == 'RETURNED' %}
+                <span class="status-badge overdue">Unpaid</span>
+              {% else %}
+                <span class="status-badge overdue">Overdue – still borrowed</span>
+              {% endif %}
+            {% else %}
+              <span class="status-badge available">Paid</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" class="empty-state">
+            <div class="empty-state-title">You have no fines</div>
+            <div class="empty-state-text">Return books on or before their due date to avoid late fees.</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Payment history / receipts -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Payment History & Receipts</h2>
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Receipt No.</th>
+          <th>Date</th>
+          <th>Book</th>
+          <th>Amount</th>
+          <th>Method</th>
+          <th style="text-align: right;">Receipt</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in payments %}
+        <tr>
+          <td><strong>{{ p.receipt_number }}</strong></td>
+          <td>{{ p.payment_date|date:"M d, Y h:i A" }}</td>
+          <td>{{ p.transaction.book.title }}</td>
+          <td>₱{{ p.amount_paid }}</td>
+          <td>{{ p.get_payment_method_display }}</td>
+          <td style="text-align: right;">
+            <a href="{% url 'receipt_view' p.receipt_number %}" class="btn btn-secondary btn-sm">View</a>
+            <a href="{% url 'receipt_download_pdf' p.receipt_number %}" class="btn btn-primary btn-sm">PDF</a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" class="empty-state">
+            <div class="empty-state-title">No payments yet</div>
+            <div class="empty-state-text">Your receipts will appear here after you pay a fine at the circulation desk.</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

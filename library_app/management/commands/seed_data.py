@@ -125,7 +125,7 @@ class Command(BaseCommand):
                 book.save()
             created_books.append(book)
 
-        today = timezone.now().date()
+        today = timezone.localdate()
 
         # 5. Create Sample Transactions:
         # Txn 1: The Love Hypothesis (Alex Morgan, 6% progress)

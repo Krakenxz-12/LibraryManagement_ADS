@@ -69,6 +69,39 @@
   </div>
 </div>
 
+<div class="stats-grid">
+  <a href="{% url 'borrow_request_list' %}" class="stat-card" style="text-decoration: none;">
+    <div class="stat-info">
+      <div class="stat-value">{{ pending_requests_count }}</div>
+      <div class="stat-label">Pending Borrow Requests</div>
+    </div>
+  </a>
+  <a href="{% url 'borrow_request_list' %}" class="stat-card" style="text-decoration: none;">
+    <div class="stat-info">
+      <div class="stat-value">{{ awaiting_pickup_count }}</div>
+      <div class="stat-label">Awaiting Pickup</div>
+    </div>
+  </a>
+</div>
+
+{% if is_admin_user %}
+<!-- Admin overview -->
+<div class="card" style="margin-bottom: 1.5rem;">
+  <div class="card-header"><h2 class="card-title">Administration</h2></div>
+  <div class="card-body">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.85rem;">
+      <a href="{% url 'librarian_list' %}" class="quick-action-btn"><span>Librarians ({{ active_librarians }} active)</span></a>
+      <a href="{% url 'system_settings' %}" class="quick-action-btn"><span>System Settings</span></a>
+      <a href="{% url 'reports_dashboard' %}" class="quick-action-btn"><span>Reports &amp; Exports</span></a>
+      <a href="{% url 'user_management' %}" class="quick-action-btn"><span>User Accounts &amp; Backups</span></a>
+    </div>
+    <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.85rem;">
+      Current rules: ₱{{ rules.daily_fine_rate }} fine per day • {{ rules.weekly_borrow_limit }} books per week • {{ rules.borrow_period_days }}-day loans • {{ total_members }} registered members • ₱{{ unpaid_fines }} unpaid fines
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Prioritized Everyday Actions for Librarians -->
 <div class="card" style="margin-bottom: 1.5rem;">
   <div class="card-header">
@@ -96,10 +129,12 @@
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg>
         <span>Add a Book</span>
       </a>
+      {% if is_admin_user %}
       <a href="{% url 'reports_dashboard' %}" class="quick-action-btn">
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
         <span>View Reports</span>
       </a>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -137,7 +172,7 @@
               <span style="font-size: 0.8rem;">{{ txn.due_date|date:"M d, Y" }}</span>
             </td>
             <td>
-              {% if txn.status == 'BORROWED' %}
+              {% if txn.status == 'BORROWED' or txn.status == 'OVERDUE' %}
                 {% if txn.is_currently_overdue %}
                   <span class="status-badge overdue">Overdue</span>
                 {% else %}
@@ -218,6 +253,36 @@
     </form>
   </div>
 </div>
+
+<!-- Member's borrowing summary -->
+{% if allowance %}
+<div class="stats-grid">
+  <a href="{% url 'my_requests' %}" class="stat-card" style="text-decoration: none;">
+    <div class="stat-info">
+      <div class="stat-value">{{ allowance.used }} / {{ allowance.limit }}</div>
+      <div class="stat-label">Weekly Books Used ({{ allowance.remaining }} left)</div>
+    </div>
+  </a>
+  <a href="{% url 'my_requests' %}" class="stat-card" style="text-decoration: none;">
+    <div class="stat-info">
+      <div class="stat-value">{{ member_pending_requests }}</div>
+      <div class="stat-label">Pending Requests</div>
+    </div>
+  </a>
+  <a href="{% url 'my_requests' %}" class="stat-card" style="text-decoration: none;">
+    <div class="stat-info">
+      <div class="stat-value">{{ member_awaiting_pickup }}</div>
+      <div class="stat-label">Awaiting Pickup</div>
+    </div>
+  </a>
+  <a href="{% url 'reservation_list' %}" class="stat-card" style="text-decoration: none;">
+    <div class="stat-info">
+      <div class="stat-value">{{ member_reservations|length }}</div>
+      <div class="stat-label">Active Reservations</div>
+    </div>
+  </a>
+</div>
+{% endif %}
 
 <!-- Student's Current Borrowed Books -->
 <div class="card">

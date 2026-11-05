@@ -69,9 +69,7 @@
             <div class="form-group" style="margin-bottom: 0;">
               <label class="form-label">Loan Duration</label>
               <select name="borrow_days" id="borrow-days-select" class="form-control" onchange="updateBorrowSummary()">
-                <option value="7">7 Days (Short Loan)</option>
-                <option value="14" selected>14 Days (Standard Student Loan)</option>
-                <option value="30">30 Days (Faculty / Extended Loan)</option>
+                <option value="{{ rules.borrow_period_days }}" selected>{{ rules.borrow_period_days }} Days (Library Standard)</option>
               </select>
             </div>
           </div>
@@ -109,7 +107,7 @@
         </div>
 
         <div style="font-size: 0.75rem; color: var(--text-muted); background: var(--bg-subtle); padding: 0.65rem 0.75rem; border-radius: var(--radius-sm); margin: 1.25rem 0;">
-          Pamantayan sa Multa: Ang aklat na naisauli lampas sa takdang petsa ay may bayad na ₱20.00 bawat araw (Standard overdue fee: ₱20.00/day).
+          Pamantayan sa Multa: Ang aklat na naisauli lampas sa takdang petsa ay may bayad na ₱{{ rules.daily_fine_rate }} bawat araw (Standard overdue fee: ₱{{ rules.daily_fine_rate }}/day).
         </div>
 
         <button type="submit" class="btn btn-primary" style="width: 100%;">
@@ -141,7 +139,7 @@
         </thead>
         <tbody>
           {% for txn in transactions %}
-          {% if txn.status == 'BORROWED' %}
+          {% if txn.status == 'BORROWED' or txn.status == 'OVERDUE' %}
           <tr>
             <td>
               <strong>{{ txn.member.full_name }}</strong><br>
@@ -218,7 +216,7 @@
               {% endif %}
             </td>
             <td>
-              {% if txn.status == 'BORROWED' %}
+              {% if txn.status == 'BORROWED' or txn.status == 'OVERDUE' %}
                 {% if txn.is_currently_overdue %}
                   <span class="status-badge overdue">Overdue</span>
                 {% else %}

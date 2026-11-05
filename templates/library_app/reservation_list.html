@@ -49,19 +49,29 @@
           <td>
             {% if res.status == 'READY' %}
               <span class="status-badge available">Ready for Pickup</span>
+              <div style="font-size: 0.75rem; color: #b45309; font-weight: 600; margin-top: 0.2rem;">Collect by {{ res.pickup_deadline|date:"M d, h:i A" }} ({{ res.pickup_deadline|timeuntil }} left)</div>
             {% elif res.status == 'PENDING' %}
-              <span class="status-badge reserved">Waiting for Return</span>
+              <span class="status-badge reserved">In queue – waiting for return</span>
             {% elif res.status == 'FULFILLED' %}
-              <span class="status-badge neutral">Completed</span>
+              <span class="status-badge neutral">Collected</span>
+            {% elif res.status == 'EXPIRED' %}
+              <span class="status-badge neutral">Expired – not collected</span>
             {% else %}
               <span class="status-badge neutral">Cancelled</span>
             {% endif %}
           </td>
           <td style="text-align: right;">
-            {% if res.status in 'PENDING,READY' %}
-              <a href="{% url 'cancel_reservation' res.id %}" class="btn btn-danger btn-sm" onclick="return confirm('Cancel reservation for {{ res.book.title }}?')">
-                Cancel Hold
-              </a>
+            {% if res.status == 'READY' and user.profile.is_librarian %}
+              <form action="{% url 'reservation_pickup' res.id %}" method="POST" style="display: inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('Confirm that {{ res.member.full_name }} has the book in hand?')">Confirm Pickup</button>
+              </form>
+            {% endif %}
+            {% if res.status == 'PENDING' or res.status == 'READY' %}
+              <form action="{% url 'cancel_reservation' res.id %}" method="POST" style="display: inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Cancel reservation for {{ res.book.title|escapejs }}?')">Cancel Hold</button>
+              </form>
             {% else %}
               <span style="font-size: 0.775rem; color: var(--text-light);">-</span>
             {% endif %}

@@ -1,0 +1,186 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}Borrow Requests{% endblock %}
+{% block breadcrumb %}Borrow Requests{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">Borrow Requests</h1>
+    <p class="page-description">Approve requests, then confirm when the member physically collects the book. Uncollected books are released after {{ hold_hours }} hours.</p>
+  </div>
+</div>
+
+<!-- 1. Pending approval -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Pending Approval</h2>
+    <span class="status-badge reserved">{{ pending|length }} pending</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Request</th>
+          <th>Member</th>
+          <th>Book</th>
+          <th>Requested</th>
+          <th>Copies Left</th>
+          <th style="text-align: right;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in pending %}
+        <tr>
+          <td><span style="font-family: monospace; font-size: 0.8rem; font-weight: 600;">{{ r.request_code }}</span></td>
+          <td>
+            <strong>{{ r.member.full_name }}</strong><br>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">{{ r.member.member_id }} • {{ r.allowance.used }}/{{ r.allowance.limit }} books collected this week</span>
+          </td>
+          <td>
+            <a href="{% url 'book_detail' r.book.id %}" style="font-weight: 600; color: var(--text-heading);">{{ r.book.title }}</a><br>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">Shelf {{ r.book.shelf_number }}</span>
+          </td>
+          <td>{{ r.requested_at|date:"M d, h:i A" }}</td>
+          <td>{{ r.book.available_copies }}</td>
+          <td style="text-align: right;">
+            <div style="display: inline-flex; gap: 0.4rem; align-items: center;">
+              <form action="{% url 'request_approve' r.id %}" method="POST">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary btn-sm">Approve</button>
+              </form>
+              <form action="{% url 'request_reject' r.id %}" method="POST" style="display: inline-flex; gap: 0.3rem;">
+                {% csrf_token %}
+                <input type="text" name="reason" class="form-control" placeholder="Reason (optional)" style="width: 140px; padding: 0.3rem 0.5rem; font-size: 0.775rem;">
+                <button type="submit" class="btn btn-danger btn-sm">Reject</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" class="empty-state">
+            <div class="empty-state-title">No pending requests</div>
+            <div class="empty-state-text">New borrow requests from members will show up here.</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 2. Awaiting pickup -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Awaiting Pickup</h2>
+    <span class="status-badge borrowed">{{ on_hold_total }} on hold</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Member</th>
+          <th>Book</th>
+          <th>Collect By</th>
+          <th style="text-align: right;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in awaiting %}
+        <tr>
+          <td><span class="status-badge borrowed">Borrow Request</span></td>
+          <td><strong>{{ r.member.full_name }}</strong><br><span style="font-size: 0.75rem; color: var(--text-muted);">{{ r.member.member_id }}</span></td>
+          <td>{{ r.book.title }}<br><span style="font-size: 0.75rem; color: var(--text-muted);">Shelf {{ r.book.shelf_number }}</span></td>
+          <td>{{ r.pickup_deadline|date:"M d, h:i A" }}<br><span style="font-size: 0.75rem; color: #b45309; font-weight: 600;">{{ r.pickup_deadline|timeuntil }} left</span></td>
+          <td style="text-align: right;">
+            <div style="display: inline-flex; gap: 0.4rem;">
+              <form action="{% url 'request_pickup' r.id %}" method="POST">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('Confirm that {{ r.member.full_name }} has the book in hand?')">Confirm Pickup</button>
+              </form>
+              <form action="{% url 'request_cancel' r.id %}" method="POST">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Cancel this hold and release the book?')">Cancel</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% for res in ready_reservations %}
+        <tr>
+          <td><span class="status-badge reserved">Reservation</span></td>
+          <td><strong>{{ res.member.full_name }}</strong><br><span style="font-size: 0.75rem; color: var(--text-muted);">{{ res.member.member_id }}</span></td>
+          <td>{{ res.book.title }}<br><span style="font-size: 0.75rem; color: var(--text-muted);">Shelf {{ res.book.shelf_number }}</span></td>
+          <td>{{ res.pickup_deadline|date:"M d, h:i A" }}<br><span style="font-size: 0.75rem; color: #b45309; font-weight: 600;">{{ res.pickup_deadline|timeuntil }} left</span></td>
+          <td style="text-align: right;">
+            <div style="display: inline-flex; gap: 0.4rem;">
+              <form action="{% url 'reservation_pickup' res.id %}" method="POST">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{% url 'borrow_request_list' %}">
+                <button type="submit" class="btn btn-primary btn-sm" onclick="return confirm('Confirm that {{ res.member.full_name }} has the book in hand?')">Confirm Pickup</button>
+              </form>
+              <form action="{% url 'cancel_reservation' res.id %}" method="POST">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Cancel this reservation?')">Cancel</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if on_hold_total == 0 %}
+        <tr>
+          <td colspan="5" class="empty-state">
+            <div class="empty-state-title">Nothing waiting for pickup</div>
+            <div class="empty-state-text">Approved requests and ready reservations appear here with a countdown.</div>
+          </td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- 3. Recent history -->
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Recent Request History</h2>
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Request</th>
+          <th>Member</th>
+          <th>Book</th>
+          <th>Requested</th>
+          <th>Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in history %}
+        <tr>
+          <td><span style="font-family: monospace; font-size: 0.8rem;">{{ r.request_code }}</span></td>
+          <td>{{ r.member.full_name }}</td>
+          <td>{{ r.book.title }}</td>
+          <td>{{ r.requested_at|date:"M d, h:i A" }}</td>
+          <td>
+            {% if r.status == 'COLLECTED' %}<span class="status-badge available">Borrowed</span>
+            {% elif r.status == 'REJECTED' %}<span class="status-badge overdue">Rejected</span>{% if r.reject_reason %}<div style="font-size: 0.75rem; color: var(--text-muted);">{{ r.reject_reason }}</div>{% endif %}
+            {% elif r.status == 'EXPIRED' %}<span class="status-badge neutral">Expired (not collected)</span>
+            {% else %}<span class="status-badge neutral">Cancelled</span>{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="5" class="empty-state">
+            <div class="empty-state-title">No history yet</div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

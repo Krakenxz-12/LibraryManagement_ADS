@@ -16,9 +16,10 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from django.db.models import Count, Sum
 
+from .services import expire_stale_holds
 from .models import (
     UserProfile, Member, Book, BorrowTransaction,
-    Reservation, FinePayment, Notification, AuditLog
+    Reservation, FinePayment, Notification, AuditLog, ACTIVE_LOAN_STATUSES
 )
 
 # --- Role Checking Decorators ---
@@ -63,11 +64,17 @@ def check_and_create_alerts():
     - Upcoming due date reminders (within 2 days)
     - Alerts to librarians for overdue/unreturned books
     """
-    today = timezone.now().date()
+    expire_stale_holds()  # release uncollected holds first
+
+    today = timezone.localdate()
     two_days_later = today + timedelta(days=2)
 
     # 1. Overdue transactions
-    overdue_txns = BorrowTransaction.objects.filter(status='BORROWED', due_date__lt=today)
+    # Evaluate once (list) so the later "any overdue?" check isn't affected by the status update below
+    overdue_txns = list(
+        BorrowTransaction.objects.filter(status__in=ACTIVE_LOAN_STATUSES, due_date__lt=today)
+        .select_related('member__user', 'book')
+    )
     for txn in overdue_txns:
         txn.status = 'OVERDUE'
         txn.fine_amount = txn.compute_fine()
@@ -81,7 +88,7 @@ def check_and_create_alerts():
                 notification_type='OVERDUE',
                 title=f"Overdue Alert: '{txn.book.title}'",
                 defaults={
-                    'message': f"Your borrowed book '{txn.book.title}' is overdue by {days} day(s). Accumulated fine: ${txn.fine_amount:.2f}. Please return it immediately."
+                    'message': f"Your borrowed book '{txn.book.title}' is overdue by {days} day(s). Accumulated fine: ₱{txn.fine_amount:.2f}. Please return it immediately."
                 }
             )
 
@@ -103,7 +110,7 @@ def check_and_create_alerts():
             )
 
     # 3. Librarian alerts for overdue/unreturned books
-    if overdue_txns.exists():
+    if overdue_txns:
         librarians = User.objects.filter(profile__role__in=['ADMIN', 'LIBRARIAN'])
         for lib in librarians:
             Notification.objects.get_or_create(
@@ -111,35 +118,11 @@ def check_and_create_alerts():
                 notification_type='LIBRARIAN_ALERT',
                 title="System Alert: Overdue Books Detected",
                 defaults={
-                    'message': f"There are currently {overdue_txns.count()} unreturned book(s) past their due dates. Review the overdue reports."
+                    'message': f"There are currently {len(overdue_txns)} unreturned book(s) past their due dates. Review the overdue reports."
                 }
             )
 
 
-def notify_reservation_ready(book):
-    """When a book is returned, fulfill the next pending reservation and alert the member."""
-    next_reservation = book.reservations.filter(status='PENDING').order_by('reservation_date').first()
-    if next_reservation:
-        next_reservation.status = 'READY'
-        next_reservation.notified_at = timezone.now()
-        next_reservation.save(update_fields=['status', 'notified_at'])
-        book.status = 'RESERVED'
-        book.save(update_fields=['status'])
-
-        if next_reservation.member.user:
-            Notification.objects.create(
-                recipient=next_reservation.member.user,
-                notification_type='RESERVATION_READY',
-                title=f"Reserved Book Ready: '{book.title}'",
-                message=f"Good news! '{book.title}' is now ready for you to pick up at shelf #{book.shelf_number}."
-            )
-        return next_reservation
-    else:
-        book.update_availability_status()
-        return None
-
-
-# --- PDF Receipt Generator ---
 def generate_receipt_pdf(payment):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
@@ -177,8 +160,8 @@ def generate_receipt_pdf(payment):
         ["Book Title:", payment.transaction.book.title],
         ["Payment Method:", payment.get_payment_method_display()],
         ["Collected By:", payment.collected_by.get_full_name() or payment.collected_by.username],
-        ["Amount Paid:", f"${payment.amount_paid:.2f}"],
-        ["Remaining Balance:", f"${payment.member.balance:.2f}"],
+        ["Amount Paid:", f"₱{payment.amount_paid:.2f}"],
+        ["Remaining Balance:", f"₱{payment.member.balance:.2f}"],
     ]
 
     table = Table(data, colWidths=[160, 320])
@@ -203,192 +186,6 @@ def generate_receipt_pdf(payment):
 
 
 # --- PDF & Excel Reports Generator ---
-def export_report_excel(report_type, query_data, title):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = title[:30]
-
-    # Header style
-    header_font = Font(name='Arial', size=11, bold=True, color='FFFFFF')
-    header_fill = PatternFill(start_color='1E293B', end_color='1E293B', fill_type='solid')
-    thin_border = Border(
-        left=Side(style='thin', color='CBD5E1'),
-        right=Side(style='thin', color='CBD5E1'),
-        top=Side(style='thin', color='CBD5E1'),
-        bottom=Side(style='thin', color='CBD5E1')
-    )
-
-    # Title Banner
-    ws.merge_cells('A1:F1')
-    ws['A1'] = f"Library Management System - {title}"
-    ws['A1'].font = Font(name='Arial', size=14, bold=True, color='1E293B')
-    ws['A1'].alignment = Alignment(horizontal='center')
-    ws.append([])
-
-    if report_type == 'borrowed_overdue':
-        headers = ['Txn Code', 'Book Title', 'Member Name', 'Issue Date', 'Due Date', 'Status', 'Fine']
-        ws.append(headers)
-        for row in query_data:
-            ws.append([
-                row.transaction_code,
-                row.book.title,
-                row.member.full_name,
-                row.issue_date.strftime("%Y-%m-%d"),
-                row.due_date.strftime("%Y-%m-%d"),
-                row.get_status_display(),
-                f"${row.fine_amount:.2f}"
-            ])
-    elif report_type == 'most_borrowed':
-        headers = ['Book Title', 'Author', 'Category', 'ISBN', 'Total Times Borrowed']
-        ws.append(headers)
-        for row in query_data:
-            ws.append([
-                row['title'],
-                row['author'],
-                row['category__name'],
-                row['isbn'],
-                row['borrow_count']
-            ])
-    elif report_type == 'members_status':
-        headers = ['Member ID', 'Full Name', 'Email', 'Phone', 'Status', 'Account Balance', 'Joined']
-        ws.append(headers)
-        for row in query_data:
-            ws.append([
-                row.member_id,
-                row.full_name,
-                row.email,
-                row.phone,
-                row.get_status_display(),
-                f"${row.balance:.2f}",
-                row.created_at.strftime("%Y-%m-%d")
-            ])
-    elif report_type == 'transactions_summary':
-        headers = ['Txn Code', 'Book Title', 'Member', 'Issued By', 'Issue Date', 'Return Date', 'Status']
-        ws.append(headers)
-        for row in query_data:
-            ws.append([
-                row.transaction_code,
-                row.book.title,
-                row.member.full_name,
-                row.issued_by.username,
-                row.issue_date.strftime("%Y-%m-%d"),
-                row.return_date.strftime("%Y-%m-%d") if row.return_date else "Not Returned",
-                row.get_status_display()
-            ])
-
-    # Format header row
-    header_row_idx = 3
-    for col in range(1, ws.max_column + 1):
-        cell = ws.cell(row=header_row_idx, column=col)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal='center')
-        ws.column_dimensions[cell.column_letter].width = 22
-
-    # Border for data
-    for row in ws.iter_rows(min_row=header_row_idx, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-        for cell in row:
-            cell.border = thin_border
-
-    output = io.BytesIO()
-    wb.save(output)
-    output.seek(0)
-    return output.getvalue()
-
-
-def export_report_pdf(report_type, query_data, title):
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle(
-        'DocTitle',
-        parent=styles['Heading1'],
-        fontSize=16,
-        leading=20,
-        textColor=colors.HexColor('#0f172a'),
-        alignment=1
-    )
-    meta_style = ParagraphStyle(
-        'MetaStyle',
-        parent=styles['Normal'],
-        fontSize=9,
-        textColor=colors.HexColor('#64748b'),
-        alignment=1
-    )
-
-    elements = [
-        Paragraph("<b>LIBRARY MANAGEMENT SYSTEM</b>", title_style),
-        Paragraph(f"{title} | Generated: {timezone.now().strftime('%Y-%m-%d %H:%M')}", meta_style),
-        Spacer(1, 15)
-    ]
-
-    table_data = []
-    if report_type == 'borrowed_overdue':
-        table_data.append(['Txn Code', 'Book Title', 'Member', 'Due Date', 'Status', 'Fine'])
-        for r in query_data[:40]:  # Limit page size cleanly
-            table_data.append([
-                r.transaction_code,
-                r.book.title[:25],
-                r.member.full_name[:20],
-                r.due_date.strftime("%Y-%m-%d"),
-                r.get_status_display(),
-                f"${r.fine_amount:.2f}"
-            ])
-    elif report_type == 'most_borrowed':
-        table_data.append(['Book Title', 'Author', 'Category', 'ISBN', 'Borrows'])
-        for r in query_data[:40]:
-            table_data.append([
-                r['title'][:30],
-                r['author'][:20],
-                r['category__name'][:15],
-                r['isbn'],
-                str(r['borrow_count'])
-            ])
-    elif report_type == 'members_status':
-        table_data.append(['Member ID', 'Name', 'Email', 'Phone', 'Status', 'Balance'])
-        for r in query_data[:40]:
-            table_data.append([
-                r.member_id,
-                r.full_name[:20],
-                r.email[:25],
-                r.phone,
-                r.get_status_display(),
-                f"${r.balance:.2f}"
-            ])
-    elif report_type == 'transactions_summary':
-        table_data.append(['Code', 'Book', 'Member', 'Issued', 'Returned', 'Status'])
-        for r in query_data[:40]:
-            ret_str = r.return_date.strftime("%Y-%m-%d") if r.return_date else "-"
-            table_data.append([
-                r.transaction_code,
-                r.book.title[:22],
-                r.member.full_name[:18],
-                r.issue_date.strftime("%Y-%m-%d"),
-                ret_str,
-                r.get_status_display()
-            ])
-
-    if table_data:
-        t = Table(table_data)
-        t.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e293b')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#cbd5e1')),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8fafc')])
-        ]))
-        elements.append(t)
-
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
-# --- Database Backup & Restore Utility ---
 def create_database_backup():
     """Exports all key models to JSON format."""
     data = {}

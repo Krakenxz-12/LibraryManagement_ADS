@@ -96,7 +96,11 @@ a:hover {
   min-width: var(--sidebar-width);
   background-color: var(--sidebar-bg);
   color: var(--sidebar-text);
-  min-height: 100vh;
+  /* Fixed to the screen height: the page scrolls, the sidebar stays put */
+  height: 100vh;
+  height: 100dvh;
+  align-self: flex-start;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -145,6 +149,7 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  min-height: 0;      /* lets the menu scroll inside the sidebar if it is taller than the screen */
   overflow-y: auto;
 }
 

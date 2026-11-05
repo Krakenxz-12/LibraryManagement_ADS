@@ -18,10 +18,21 @@
 
     <!-- Reservation for Members -->
     {% if user.profile.is_member %}
-      {% if user_has_reserved %}
-        <button class="btn btn-secondary" disabled>Already Reserved by You</button>
-      {% elif user_has_borrowed %}
+      {% if user_has_borrowed %}
         <button class="btn btn-secondary" disabled>Currently Borrowed by You</button>
+      {% elif user_request and user_request.status == 'APPROVED' %}
+        <a href="{% url 'my_requests' %}" class="btn btn-secondary">Awaiting pickup – collect by {{ user_request.pickup_deadline|date:"M d, h:i A" }}</a>
+      {% elif user_request %}
+        <a href="{% url 'my_requests' %}" class="btn btn-secondary">Borrow Request Pending</a>
+      {% elif user_has_reserved %}
+        <button class="btn btn-secondary" disabled>Already Reserved by You</button>
+      {% elif book.status == 'LOST' or book.status == 'UNDER_REPAIR' %}
+        <button class="btn btn-secondary" disabled>Not Available</button>
+      {% elif book.available_copies > 0 %}
+        <form action="{% url 'request_borrow' book.id %}" method="POST" style="display: inline;">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary">Request to Borrow</button>
+        </form>
       {% else %}
         <form action="{% url 'reserve_book' book.id %}" method="POST" style="display: inline;">
           {% csrf_token %}
@@ -119,11 +130,11 @@
         </div>
         <div class="summary-row">
           <span class="summary-label">Currently Borrowed:</span>
-          <span class="summary-val">{{ book.total_copies|add:"-1"|default:0 }}</span>
+          <span class="summary-val">{{ active_borrows|length }}</span>
         </div>
         <div class="summary-row">
-          <span class="summary-label">Pending Holds:</span>
-          <span class="summary-val">{{ reservations|length|default:0 }}</span>
+          <span class="summary-label">Waiting (requests & reservations):</span>
+          <span class="summary-val">{{ waiting_count }}</span>
         </div>
       </div>
     </div>

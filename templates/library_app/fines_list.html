@@ -91,7 +91,7 @@
       </div>
       <div class="card-body">
         <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">
-          Pamantayang bayad sa silid-aklatan: <strong>₱20.00 bawat araw</strong> lampas sa takdang petsa.
+          Pamantayang bayad sa silid-aklatan: <strong>₱{{ rules.daily_fine_rate }} bawat araw</strong> lampas sa takdang petsa.
         </p>
         <div class="form-group">
           <label class="form-label">Bilang ng Araw na Naantala (Days Overdue)</label>
@@ -238,8 +238,10 @@ function openPaymentModal(txnId, memberName, bookTitle, amount) {
 }
 
 function calculateFine() {
+  const dailyFineRate = parseFloat('{{ rules.daily_fine_rate|stringformat:"s" }}');
   const days = parseInt(document.getElementById('calc-days').value || '0', 10);
-  const total = (days * 20.00).toFixed(2);
+  const total = (days * dailyFineRate).toFixed(2);
+
   document.getElementById('calc-result').textContent = '₱' + total;
 }
 </script>

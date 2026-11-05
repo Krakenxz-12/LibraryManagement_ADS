@@ -1,24 +1,40 @@
 from datetime import timedelta, date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
+import secrets
 
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
+from django.conf import settings
+from django.db import transaction
 from django.http import HttpResponse, JsonResponse
+from django.views.decorators.http import require_POST
 from django.db.models import Q, Count, Sum
 from django.utils import timezone
 
 from .models import (
     UserProfile, Category, Member, Book, BorrowTransaction,
-    Reservation, FinePayment, Notification, AuditLog
+    Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, ACTIVE_LOAN_STATUSES
+)
+from .forms import LibrarySettingsForm
+from .services import (
+    HoldError, weekly_allowance, expire_stale_holds, promote_reservations, submit_borrow_request,
+    approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
+    cancel_reservation as cancel_reservation_service, confirm_reservation_pickup, checkout_at_desk,
+)
+from .reports import (
+    REPORT_TITLES, REPORT_TYPES, build_report, category_rows, export_excel, export_pdf,
+    overview_stats, parse_range, top_books, top_borrowers,
 )
 from .utils import (
     role_required, librarian_required, admin_required,
-    log_audit, check_and_create_alerts, notify_reservation_ready,
-    generate_receipt_pdf, export_report_excel, export_report_pdf,
+    log_audit, check_and_create_alerts,
+    generate_receipt_pdf,
     create_database_backup, restore_database_backup
 )
 
@@ -60,7 +76,7 @@ def dashboard_view(request):
     # Auto-scan alerts on dashboard visit
     check_and_create_alerts()
 
-    today = timezone.now().date()
+    today = timezone.localdate()
     user = request.user
     role = getattr(user.profile, 'role', 'MEMBER') if hasattr(user, 'profile') else 'ADMIN'
 
@@ -68,7 +84,7 @@ def dashboard_view(request):
     total_books = Book.objects.count()
     available_books = Book.objects.filter(status='AVAILABLE').count()
     borrowed_books = Book.objects.filter(status='BORROWED').count()
-    overdue_books = BorrowTransaction.objects.filter(status='BORROWED', due_date__lt=today).count()
+    overdue_books = BorrowTransaction.objects.filter(status__in=ACTIVE_LOAN_STATUSES, due_date__lt=today).count()
     total_members = Member.objects.count()
     active_members = Member.objects.filter(status='ACTIVE').count()
     unpaid_fines = BorrowTransaction.objects.filter(fine_amount__gt=0, fine_paid=False).aggregate(total=Sum('fine_amount'))['total'] or Decimal('0.00')
@@ -78,7 +94,7 @@ def dashboard_view(request):
 
     # Overdue list
     overdue_txns = BorrowTransaction.objects.filter(
-        status='BORROWED', due_date__lt=today
+        status__in=ACTIVE_LOAN_STATUSES, due_date__lt=today
     ).select_related('book', 'member')[:5]
 
     # User notifications
@@ -92,13 +108,44 @@ def dashboard_view(request):
     if role == 'MEMBER':
         member_profile = Member.objects.filter(user=user).first()
         if member_profile:
-            member_active_borrows = BorrowTransaction.objects.filter(member=member_profile, status='BORROWED')
+            member_active_borrows = BorrowTransaction.objects.filter(member=member_profile, status__in=ACTIVE_LOAN_STATUSES)
             member_reservations = Reservation.objects.filter(member=member_profile).exclude(status__in=['FULFILLED', 'CANCELLED'])
 
     # Recent list of books for visual carousel/grid
     recent_books = Book.objects.select_related('category').all().order_by('-created_at')[:10]
 
+    # Borrow-request / pickup counters
+    pending_requests_count = awaiting_pickup_count = 0
+    allowance = None
+    member_pending_requests = member_awaiting_pickup = 0
+    if role == 'MEMBER':
+        if member_profile:
+            allowance = weekly_allowance(member_profile)
+            member_pending_requests = member_profile.borrow_requests.filter(status='PENDING').count()
+            member_awaiting_pickup = (
+                member_profile.borrow_requests.filter(status='APPROVED').count()
+                + member_profile.reservations.filter(status='READY').count()
+            )
+    else:
+        pending_requests_count = BorrowRequest.objects.filter(status='PENDING').count()
+        awaiting_pickup_count = (
+            BorrowRequest.objects.filter(status='APPROVED').count()
+            + Reservation.objects.filter(status='READY').count()
+        )
+
+    is_admin_user = role == 'ADMIN' or user.is_superuser
+    active_librarians = (
+        User.objects.filter(profile__role='LIBRARIAN', is_active=True).count() if is_admin_user else 0
+    )
+
     context = {
+        'is_admin_user': is_admin_user,
+        'active_librarians': active_librarians,
+        'pending_requests_count': pending_requests_count,
+        'awaiting_pickup_count': awaiting_pickup_count,
+        'allowance': allowance,
+        'member_pending_requests': member_pending_requests,
+        'member_awaiting_pickup': member_awaiting_pickup,
         'total_books': total_books,
         'available_books': available_books,
         'borrowed_books': borrowed_books,
@@ -161,6 +208,9 @@ def member_create_view(request):
         phone = request.POST.get('phone', '').strip()
         address = request.POST.get('address', '').strip()
         dob = request.POST.get('date_of_birth') or None
+        membership_type = request.POST.get('membership_type', 'STUDENT')
+        if membership_type not in dict(Member.MEMBERSHIP_TYPE_CHOICES):
+            membership_type = 'STUDENT'
 
         if Member.objects.filter(email=email).exists():
             messages.error(request, f"A member with email '{email}' already exists.")
@@ -190,6 +240,7 @@ def member_create_view(request):
             phone=phone,
             address=address,
             date_of_birth=dob,
+            membership_type=membership_type,
             status='ACTIVE'
         )
 
@@ -215,6 +266,9 @@ def member_edit_view(request, member_id):
         if dob:
             member.date_of_birth = dob
         member.status = request.POST.get('status', member.status)
+        new_type = request.POST.get('membership_type', member.membership_type)
+        if new_type in dict(Member.MEMBERSHIP_TYPE_CHOICES):
+            member.membership_type = new_type
         member.save()
 
         log_audit(request, 'UPDATE_MEMBER', 'Member', member.id, f"Updated member {member.member_id}")
@@ -387,9 +441,9 @@ def book_edit_view(request, book_id):
 def book_delete_view(request, book_id):
     book = get_object_or_404(Book, id=book_id)
 
-    # Prevent deleting if active borrow transactions exist
-    if book.borrows.filter(status='BORROWED').exists():
-        messages.error(request, f"Cannot delete '{book.title}' because it has active borrow transactions.")
+    # Books with any borrow history are protected (PROTECT FK) - block with a message instead of a 500 error
+    if book.borrows.exists():
+        messages.error(request, f"Cannot delete '{book.title}' because it has borrowing history. Set its status to Lost or Under Repair instead.")
         return redirect('book_list')
 
     title = book.title
@@ -402,17 +456,19 @@ def book_delete_view(request, book_id):
 @login_required
 def book_detail_view(request, book_id):
     book = get_object_or_404(Book.objects.select_related('category'), id=book_id)
-    active_borrows = book.borrows.filter(status='BORROWED').select_related('member')
+    active_borrows = book.borrows.filter(status__in=ACTIVE_LOAN_STATUSES).select_related('member')
     reservations = book.reservations.select_related('member').all()
     categories = Category.objects.all()
 
     # Check if current member has already reserved or borrowed this book
     user_has_reserved = False
     user_has_borrowed = False
+    user_request = None
     if hasattr(request.user, 'member_account'):
         member = request.user.member_account
         user_has_reserved = book.reservations.filter(member=member, status__in=['PENDING', 'READY']).exists()
-        user_has_borrowed = book.borrows.filter(member=member, status='BORROWED').exists()
+        user_has_borrowed = book.borrows.filter(member=member, status__in=ACTIVE_LOAN_STATUSES).exists()
+        user_request = book.borrow_requests.filter(member=member, status__in=['PENDING', 'APPROVED']).first()
 
     context = {
         'book': book,
@@ -421,6 +477,11 @@ def book_detail_view(request, book_id):
         'reservations': reservations,
         'user_has_reserved': user_has_reserved,
         'user_has_borrowed': user_has_borrowed,
+        'user_request': user_request,
+        'waiting_count': (
+            book.reservations.filter(status__in=['PENDING', 'READY']).count()
+            + book.borrow_requests.filter(status__in=['PENDING', 'APPROVED']).count()
+        ),
     }
     return render(request, 'library_app/book_detail.html', context)
 
@@ -469,50 +530,18 @@ def transaction_list_view(request):
 @login_required
 @librarian_required
 def borrow_create_view(request):
+    """Walk-in checkout at the desk (also used to hand over a member's held book)."""
     if request.method == 'POST':
-        member_id = request.POST.get('member_id')
-        book_id = request.POST.get('book_id')
-        days = int(request.POST.get('borrow_days', 14))
-
-        member = get_object_or_404(Member, id=member_id)
-        book = get_object_or_404(Book, id=book_id)
-
-        # Validations
-        if member.status != 'ACTIVE':
-            messages.error(request, f"Member {member.member_id} is inactive or suspended.")
+        member = get_object_or_404(Member, id=request.POST.get('member_id'))
+        book = get_object_or_404(Book, id=request.POST.get('book_id'))
+        try:
+            txn = checkout_at_desk(member, book.id, request.user)  # duration comes from Library Settings
+        except HoldError as e:
+            messages.error(request, str(e))
             return redirect('transaction_list')
 
-        if book.available_copies <= 0:
-            messages.error(request, f"Book '{book.title}' currently has no copies available for checkout.")
-            return redirect('transaction_list')
-
-        # Create transaction
-        issue_date = timezone.now().date()
-        due_date = issue_date + timedelta(days=days)
-        txn_code = BorrowTransaction.generate_transaction_code()
-
-        txn = BorrowTransaction.objects.create(
-            transaction_code=txn_code,
-            member=member,
-            book=book,
-            issued_by=request.user,
-            issue_date=issue_date,
-            due_date=due_date,
-            status='BORROWED'
-        )
-
-        # Update book availability
-        book.available_copies -= 1
-        book.update_availability_status()
-
-        # Fulfill reservation if member had reserved it
-        pending_res = Reservation.objects.filter(member=member, book=book, status__in=['PENDING', 'READY']).first()
-        if pending_res:
-            pending_res.status = 'FULFILLED'
-            pending_res.save()
-
-        log_audit(request, 'CHECKOUT_BOOK', 'BorrowTransaction', txn.id, f"Issued '{book.title}' to {member.full_name} ({txn_code})")
-        messages.success(request, f"Book '{book.title}' successfully checked out to {member.full_name}. Due on {due_date.strftime('%b %d, %Y')}.")
+        log_audit(request, 'CHECKOUT_BOOK', 'BorrowTransaction', txn.id, f"Issued '{book.title}' to {member.full_name} ({txn.transaction_code})")
+        messages.success(request, f"Book '{book.title}' successfully checked out to {member.full_name}. Due on {txn.due_date.strftime('%b %d, %Y')}.")
         return redirect('transaction_list')
 
     return redirect('transaction_list')
@@ -521,36 +550,42 @@ def borrow_create_view(request):
 @login_required
 @librarian_required
 def return_process_view(request, transaction_id):
-    txn = get_object_or_404(BorrowTransaction, id=transaction_id)
+    with transaction.atomic():
+        txn = get_object_or_404(
+            BorrowTransaction.objects.select_for_update().select_related('member', 'book'),
+            id=transaction_id
+        )
 
-    if txn.status == 'RETURNED':
-        messages.info(request, "This transaction has already been completed.")
-        return redirect('transaction_list')
+        if txn.status == 'RETURNED':
+            messages.info(request, "This transaction has already been completed.")
+            return redirect('transaction_list')
 
-    today = timezone.now().date()
-    txn.return_date = today
-    txn.returned_to = request.user
-    txn.status = 'RETURNED'
+        today = timezone.localdate()
+        txn.return_date = today
+        txn.returned_to = request.user
+        txn.status = 'RETURNED'
 
-    # Compute overdue fine if returned late
-    fine = txn.compute_fine()
-    txn.fine_amount = fine
-    if fine > Decimal('0.00'):
-        txn.fine_paid = False
-        txn.member.balance += fine
-        txn.member.save()
-        messages.warning(request, f"Book returned late by {txn.days_overdue} day(s). Late fee assessed: ₱{fine:.2f}.")
-    else:
-        messages.success(request, f"Book '{txn.book.title}' returned on time. No fines.")
+        # Compute overdue fine if returned late
+        fine = txn.compute_fine()
+        txn.fine_amount = fine
+        if fine > Decimal('0.00'):
+            txn.fine_paid = False
+            txn.member.balance += fine
+            txn.member.save()
+            messages.warning(request, f"Book returned late by {txn.days_overdue} day(s). Late fee assessed: ₱{fine:.2f}.")
+        else:
+            messages.success(request, f"Book '{txn.book.title}' returned on time. No fines.")
 
-    txn.save()
+        txn.save()
 
-    # Update book copy count and check reservations
-    book = txn.book
-    book.available_copies += 1
-    next_reservation = notify_reservation_ready(book)
-    if next_reservation:
-        messages.info(request, f"Book '{book.title}' has a pending reservation for {next_reservation.member.full_name}. Notified member for pickup.")
+        # Put the copy back on the shelf (save the count!) and check reservations
+        book = Book.objects.select_for_update().get(pk=txn.book_id)
+        book.available_copies = min(book.available_copies + 1, book.total_copies)
+        book.save(update_fields=['available_copies'])
+        promoted = promote_reservations(book)
+        if promoted:
+            nxt = promoted[0]
+            messages.info(request, f"'{book.title}' is now held for {nxt.member.full_name} (next in the reservation queue). They have until {timezone.localtime(nxt.pickup_deadline).strftime('%b %d, %I:%M %p')} to collect it.")
 
     log_audit(request, 'RETURN_BOOK', 'BorrowTransaction', txn.id, f"Processed return for {txn.transaction_code}. Fine: ₱{fine:.2f}")
     return redirect('transaction_list')
@@ -562,6 +597,7 @@ def return_process_view(request, transaction_id):
 
 @login_required
 def reservation_list_view(request):
+    expire_stale_holds()
     user = request.user
     role = getattr(user.profile, 'role', 'MEMBER') if hasattr(user, 'profile') else 'ADMIN'
 
@@ -579,6 +615,7 @@ def reservation_list_view(request):
 
 
 @login_required
+@require_POST
 def reserve_book_view(request, book_id):
     book = get_object_or_404(Book, id=book_id)
 
@@ -593,25 +630,19 @@ def reserve_book_view(request, book_id):
             return redirect('book_detail', book_id=book.id)
         member = get_object_or_404(Member, id=member_id)
 
-    # Check if member already has pending reservation for this book
-    if Reservation.objects.filter(book=book, member=member, status__in=['PENDING', 'READY']).exists():
-        messages.warning(request, f"{member.full_name} already has an active reservation for '{book.title}'.")
+    try:
+        res = place_reservation(member, book)
+    except HoldError as e:
+        messages.warning(request, str(e))
         return redirect('book_detail', book_id=book.id)
 
-    # Create reservation
-    res = Reservation.objects.create(
-        book=book,
-        member=member,
-        status='PENDING',
-        notes="Reserved online by member" if hasattr(request.user, 'member_account') else f"Reserved by staff {request.user.username}"
-    )
-
     log_audit(request, 'RESERVE_BOOK', 'Reservation', res.id, f"Reserved '{book.title}' for {member.full_name}")
-    messages.success(request, f"Reservation confirmed for '{book.title}'. You will be alerted when it is ready for collection.")
+    messages.success(request, f"Reservation confirmed for '{book.title}'. You are in the queue and will be alerted when it is ready for pickup.")
     return redirect('book_detail', book_id=book.id)
 
 
 @login_required
+@require_POST
 def cancel_reservation_view(request, reservation_id):
     res = get_object_or_404(Reservation, id=reservation_id)
 
@@ -621,18 +652,200 @@ def cancel_reservation_view(request, reservation_id):
             messages.error(request, "Unauthorized action.")
             return redirect('reservation_list')
 
-    res.status = 'CANCELLED'
-    res.save()
-    res.book.update_availability_status()
+    try:
+        cancel_reservation_service(res.id)
+    except HoldError as e:
+        messages.warning(request, str(e))
+        return redirect('reservation_list')
 
     log_audit(request, 'CANCEL_RESERVATION', 'Reservation', res.id, f"Cancelled reservation for '{res.book.title}'")
     messages.info(request, f"Reservation {res.reservation_code} cancelled.")
     return redirect('reservation_list')
 
 
+@login_required
+@librarian_required
+@require_POST
+def reservation_pickup_view(request, reservation_id):
+    """Librarian confirms the member physically collected a reserved (held) book."""
+    expire_stale_holds()
+    res = get_object_or_404(Reservation, id=reservation_id)
+    try:
+        txn = confirm_reservation_pickup(res.id, request.user)
+    except HoldError as e:
+        messages.error(request, str(e))
+        return redirect(request.POST.get('next') or 'reservation_list')
+
+    log_audit(request, 'RESERVATION_PICKUP', 'BorrowTransaction', txn.id, f"Handed over reserved '{res.book.title}' to {res.member.full_name}")
+    messages.success(request, f"'{res.book.title}' handed to {res.member.full_name}. Due on {txn.due_date.strftime('%b %d, %Y')}.")
+    return redirect(request.POST.get('next') or 'reservation_list')
+
+
+# ==========================================
+# BORROW REQUESTS (request -> approve -> pickup -> borrowed)
+# ==========================================
+
+@login_required
+@require_POST
+def request_borrow_view(request, book_id):
+    book = get_object_or_404(Book, id=book_id)
+    member = Member.objects.filter(user=request.user).first()
+    if not member:
+        messages.error(request, "Your account is not linked to a library membership. Please see the librarian.")
+        return redirect('book_detail', book_id=book.id)
+
+    try:
+        req = submit_borrow_request(member, book)
+    except HoldError as e:
+        messages.warning(request, str(e))
+        return redirect('book_detail', book_id=book.id)
+
+    log_audit(request, 'REQUEST_BORROW', 'BorrowRequest', req.id, f"{member.full_name} requested '{book.title}'")
+    messages.success(request, f"Request sent for '{book.title}'. The librarian will review it, and you'll be notified when it's ready for pickup.")
+    return redirect('my_requests')
+
+
+@login_required
+@librarian_required
+def borrow_request_list_view(request):
+    expire_stale_holds()
+    pending = list(BorrowRequest.objects.filter(status='PENDING').select_related('member', 'book').order_by('requested_at'))
+    for r in pending:
+        r.allowance = weekly_allowance(r.member)
+    awaiting = list(BorrowRequest.objects.filter(status='APPROVED').select_related('member', 'book').order_by('pickup_deadline'))
+    ready_reservations = list(Reservation.objects.filter(status='READY').select_related('member', 'book').order_by('pickup_deadline'))
+    context = {
+        'pending': pending,
+        'awaiting': awaiting,
+        'ready_reservations': ready_reservations,
+        'on_hold_total': len(awaiting) + len(ready_reservations),
+        'history': BorrowRequest.objects.exclude(status__in=['PENDING', 'APPROVED']).select_related('member', 'book', 'handled_by')[:30],
+        'hold_hours': settings.PICKUP_HOLD_HOURS,
+    }
+    return render(request, 'library_app/borrow_request_list.html', context)
+
+
+@login_required
+@librarian_required
+@require_POST
+def request_approve_view(request, request_id):
+    expire_stale_holds()
+    req = get_object_or_404(BorrowRequest, id=request_id)
+    try:
+        approve_request(req.id, request.user)
+    except HoldError as e:
+        messages.error(request, str(e))
+        return redirect('borrow_request_list')
+    log_audit(request, 'APPROVE_REQUEST', 'BorrowRequest', req.id, f"Approved '{req.book.title}' for {req.member.full_name}")
+    messages.success(request, f"Approved. '{req.book.title}' is held for {req.member.full_name} for {settings.PICKUP_HOLD_HOURS} hours.")
+    return redirect('borrow_request_list')
+
+
+@login_required
+@librarian_required
+@require_POST
+def request_reject_view(request, request_id):
+    req = get_object_or_404(BorrowRequest, id=request_id)
+    try:
+        reject_request(req.id, request.user, request.POST.get('reason', ''))
+    except HoldError as e:
+        messages.error(request, str(e))
+        return redirect('borrow_request_list')
+    log_audit(request, 'REJECT_REQUEST', 'BorrowRequest', req.id, f"Rejected '{req.book.title}' for {req.member.full_name}")
+    messages.info(request, f"Request {req.request_code} rejected.")
+    return redirect('borrow_request_list')
+
+
+@login_required
+@librarian_required
+@require_POST
+def request_pickup_view(request, request_id):
+    """Librarian confirms the member physically received the book. The loan period starts now."""
+    expire_stale_holds()
+    req = get_object_or_404(BorrowRequest, id=request_id)
+    try:
+        txn = confirm_pickup(req.id, request.user)
+    except HoldError as e:
+        messages.error(request, str(e))
+        return redirect('borrow_request_list')
+    log_audit(request, 'CONFIRM_PICKUP', 'BorrowTransaction', txn.id, f"Handed over '{req.book.title}' to {req.member.full_name} ({txn.transaction_code})")
+    messages.success(request, f"'{req.book.title}' handed to {req.member.full_name}. Due on {txn.due_date.strftime('%b %d, %Y')}.")
+    return redirect('borrow_request_list')
+
+
+@login_required
+@require_POST
+def request_cancel_view(request, request_id):
+    req = get_object_or_404(BorrowRequest, id=request_id)
+    is_member = hasattr(request.user, 'profile') and request.user.profile.is_member
+    if is_member and req.member.user != request.user:
+        messages.error(request, "Unauthorized action.")
+        return redirect('my_requests')
+    try:
+        cancel_request(req.id, request.user)
+    except HoldError as e:
+        messages.warning(request, str(e))
+    else:
+        log_audit(request, 'CANCEL_REQUEST', 'BorrowRequest', req.id, f"Cancelled request for '{req.book.title}'")
+        messages.info(request, f"Request {req.request_code} cancelled.")
+    return redirect('my_requests' if is_member else 'borrow_request_list')
+
+
+@login_required
+def my_requests_view(request):
+    expire_stale_holds()
+    member = Member.objects.filter(user=request.user).first()
+    if not member:
+        return redirect('dashboard')
+    context = {
+        'member': member,
+        'allowance': weekly_allowance(member),
+        'requests': member.borrow_requests.select_related('book'),
+        'ready_reservations': member.reservations.filter(status='READY').select_related('book'),
+        'active_reservation_total': member.reservations.filter(status__in=['PENDING', 'READY']).count(),
+        'borrowed_count': member.borrows.filter(status__in=ACTIVE_LOAN_STATUSES).count(),
+    }
+    return render(request, 'library_app/my_requests.html', context)
+
+
 # ==========================================
 # MODULE 5: FINE & PAYMENT PROCESSING
 # ==========================================
+
+@login_required
+def my_fines_view(request):
+    """Member-facing page: own fines (with balance) and payment receipts."""
+    profile = getattr(request.user, 'profile', None)
+    if not (profile and profile.is_member) or request.user.is_superuser:
+        return redirect('fines_list')  # staff use the full Fines & Payments page
+
+    member = Member.objects.filter(user=request.user).first()
+    fine_rows, payments = [], []
+    total_outstanding = total_paid = Decimal('0.00')
+
+    if member:
+        txns = (
+            BorrowTransaction.objects.filter(member=member, fine_amount__gt=0)
+            .select_related('book').prefetch_related('payments')
+            .order_by('-issue_date', '-id')
+        )
+        for txn in txns:
+            paid = sum((p.amount_paid for p in txn.payments.all()), Decimal('0.00'))
+            outstanding = max(txn.fine_amount - paid, Decimal('0.00'))
+            fine_rows.append({'txn': txn, 'paid': paid, 'outstanding': outstanding})
+            total_outstanding += outstanding
+        payments = member.payments.select_related('transaction__book')
+        total_paid = sum((p.amount_paid for p in payments), Decimal('0.00'))
+
+    return render(request, 'library_app/my_fines.html', {
+        'member': member,
+        'fine_rows': fine_rows,
+        'unpaid_fines': [r for r in fine_rows if r['outstanding'] > 0],
+        'payments': payments,
+        'total_outstanding': total_outstanding,
+        'total_paid': total_paid,
+    })
+
 
 @login_required
 @librarian_required
@@ -656,12 +869,22 @@ def process_fine_payment_view(request, transaction_id):
     txn = get_object_or_404(BorrowTransaction, id=transaction_id)
 
     if request.method == 'POST':
-        amount = Decimal(request.POST.get('amount', '0.00'))
+        try:
+            amount = Decimal(request.POST.get('amount', '0.00'))
+        except InvalidOperation:
+            messages.error(request, "Please enter a valid payment amount.")
+            return redirect('fines_list')
         method = request.POST.get('payment_method', 'CASH')
         notes = request.POST.get('notes', '')
 
         if amount <= Decimal('0.00'):
             messages.error(request, "Payment amount must be greater than zero.")
+            return redirect('fines_list')
+
+        already_paid = txn.payments.aggregate(total=Sum('amount_paid'))['total'] or Decimal('0.00')
+        outstanding = txn.fine_amount - already_paid
+        if amount > outstanding:
+            messages.error(request, f"Payment of ₱{amount:.2f} is more than the outstanding fine of ₱{max(outstanding, Decimal('0.00')):.2f}.")
             return redirect('fines_list')
 
         # Record payment
@@ -681,7 +904,7 @@ def process_fine_payment_view(request, transaction_id):
         txn.member.save()
 
         # Update transaction fine status
-        if amount >= txn.fine_amount:
+        if already_paid + amount >= txn.fine_amount:
             txn.fine_paid = True
             txn.save()
 
@@ -728,89 +951,268 @@ def receipt_download_pdf_view(request, receipt_number):
 # ==========================================
 
 @login_required
-@librarian_required
+@admin_required
 def reports_dashboard_view(request):
-    today = timezone.now().date()
-
-    # 1. Borrowed and Overdue stats
-    borrowed_count = BorrowTransaction.objects.filter(status='BORROWED').count()
-    overdue_count = BorrowTransaction.objects.filter(status='BORROWED', due_date__lt=today).count()
-
-    # 2. Most borrowed books
-    most_borrowed = Book.objects.annotate(borrow_count=Count('borrows')).order_by('-borrow_count')[:10]
-
-    # 3. Active vs Inactive members
-    active_members_count = Member.objects.filter(status='ACTIVE').count()
-    inactive_members_count = Member.objects.filter(status='INACTIVE').count()
-    suspended_members_count = Member.objects.filter(status='SUSPENDED').count()
-
-    # 4. Monthly transactions (last 6 months)
-    transactions_monthly = (
-        BorrowTransaction.objects.values('issue_date__month')
-        .annotate(total=Count('id'))
-        .order_by('issue_date__month')
-    )
-
-    # Categories breakdown
-    category_counts = Category.objects.annotate(book_count=Count('books'))
-
+    start, end, note = parse_range(request.GET)
+    if note:
+        messages.info(request, note)
     context = {
-        'borrowed_count': borrowed_count,
-        'overdue_count': overdue_count,
-        'most_borrowed': most_borrowed,
-        'active_members_count': active_members_count,
-        'inactive_members_count': inactive_members_count,
-        'suspended_members_count': suspended_members_count,
-        'transactions_monthly': transactions_monthly,
-        'category_counts': category_counts,
+        'start': start, 'end': end,
+        'stats': overview_stats(start, end),
+        'top_books': top_books(start, end, 10),
+        'top_borrowers': top_borrowers(start, end, 10),
+        'category_rows': category_rows(start, end),
+        'report_types': REPORT_TYPES,
+        'query': f"start={start.isoformat()}&end={end.isoformat()}",
     }
     return render(request, 'library_app/reports_dashboard.html', context)
 
 
 @login_required
-@librarian_required
+@admin_required
 def export_report_view(request):
-    report_type = request.GET.get('type', 'borrowed_overdue')
+    report_type = request.GET.get('type', 'overview')
     export_format = request.GET.get('format', 'excel')
+    start, end, _ = parse_range(request.GET)
+    if report_type not in REPORT_TITLES:
+        messages.error(request, "Unknown report type.")
+        return redirect('reports_dashboard')
 
-    today = timezone.now().date()
-    query_data = None
-    title = ""
+    report = build_report(report_type, start, end)
+    stamp = timezone.localdate().strftime("%Y%m%d")
+    log_audit(request, 'EXPORT_REPORT', 'Report', report_type, f"Exported '{report['title']}' as {export_format} ({start} to {end})")
 
-    if report_type == 'borrowed_overdue':
-        title = "Borrowed and Overdue Books Report"
-        query_data = BorrowTransaction.objects.filter(
-            Q(status='BORROWED') | Q(status='OVERDUE')
-        ).select_related('book', 'member')
-    elif report_type == 'most_borrowed':
-        title = "Most Borrowed Books Summary"
-        query_data = (
-            Book.objects.annotate(borrow_count=Count('borrows'))
-            .values('title', 'author', 'isbn', 'category__name', 'borrow_count')
-            .order_by('-borrow_count')
-        )
-    elif report_type == 'members_status':
-        title = "Members Status and Balances Report"
-        query_data = Member.objects.all().order_by('status', 'last_name')
-    elif report_type == 'transactions_summary':
-        title = "Transactions Summary Report"
-        query_data = BorrowTransaction.objects.select_related('book', 'member', 'issued_by').all()[:100]
-
-    if export_format == 'excel':
-        excel_bytes = export_report_excel(report_type, query_data, title)
-        response = HttpResponse(
-            excel_bytes,
-            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        )
-        response['Content-Disposition'] = f'attachment; filename="{report_type}_{today.strftime("%Y%m%d")}.xlsx"'
+    if export_format == 'pdf':
+        response = HttpResponse(export_pdf(report), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{report_type}_{stamp}.pdf"'
         return response
-    elif export_format == 'pdf':
-        pdf_bytes = export_report_pdf(report_type, query_data, title)
-        response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{report_type}_{today.strftime("%Y%m%d")}.pdf"'
-        return response
+    response = HttpResponse(
+        export_excel(report),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response['Content-Disposition'] = f'attachment; filename="{report_type}_{stamp}.xlsx"'
+    return response
 
-    return redirect('reports_dashboard')
+
+# ==========================================
+# ADMIN: SYSTEM SETTINGS & CATEGORIES
+# ==========================================
+
+SETTING_LABELS = {
+    'daily_fine_rate': 'Fine per overdue day',
+    'weekly_borrow_limit': 'Weekly borrowing limit',
+    'borrow_period_days': 'Borrowing duration (days)',
+}
+
+
+@login_required
+@admin_required
+def system_settings_view(request):
+    rules = LibrarySettings.get()
+    if request.method == 'POST':
+        form = LibrarySettingsForm(request.POST, instance=rules)
+        if form.is_valid():
+            changes = [
+                f"{SETTING_LABELS[f]}: {form.initial[f]} -> {form.cleaned_data[f]}" for f in form.changed_data
+            ]
+            if changes:
+                obj = form.save(commit=False)
+                obj.updated_by = request.user
+                obj.save()
+                log_audit(request, 'UPDATE_SETTINGS', 'LibrarySettings', 1, "; ".join(changes))
+                messages.success(request, "Settings saved. They apply to new loans and calculations; existing loans keep their original due date and fine rate.")
+            else:
+                messages.info(request, "No changes to save.")
+            return redirect('system_settings')
+        messages.error(request, "Please fix the highlighted settings.")
+    else:
+        form = LibrarySettingsForm(instance=rules)
+
+    return render(request, 'library_app/system_settings.html', {
+        'form': form,
+        'current': LibrarySettings.get(),
+        'categories': Category.objects.annotate(book_count=Count('books')).order_by('name'),
+    })
+
+
+def _category_name_taken(name, exclude_id=None):
+    qs = Category.objects.filter(name__iexact=name)
+    if exclude_id:
+        qs = qs.exclude(id=exclude_id)
+    return qs.exists()
+
+
+@login_required
+@admin_required
+@require_POST
+def category_create_view(request):
+    name = request.POST.get('name', '').strip()
+    if not name or len(name) > 100:
+        messages.error(request, "Category name is required (100 characters max).")
+    elif _category_name_taken(name):
+        messages.error(request, f"A category named '{name}' already exists.")
+    else:
+        cat = Category.objects.create(name=name, description=request.POST.get('description', '').strip())
+        log_audit(request, 'CREATE_CATEGORY', 'Category', cat.id, f"Added category '{name}'")
+        messages.success(request, f"Category '{name}' added.")
+    return redirect('system_settings')
+
+
+@login_required
+@admin_required
+@require_POST
+def category_update_view(request, category_id):
+    cat = get_object_or_404(Category, id=category_id)
+    name = request.POST.get('name', '').strip()
+    if not name or len(name) > 100:
+        messages.error(request, "Category name is required (100 characters max).")
+    elif _category_name_taken(name, exclude_id=cat.id):
+        messages.error(request, f"A category named '{name}' already exists.")
+    else:
+        old = cat.name
+        cat.name = name
+        cat.description = request.POST.get('description', '').strip()
+        cat.save()
+        log_audit(request, 'UPDATE_CATEGORY', 'Category', cat.id, f"Renamed/edited category '{old}' -> '{name}'")
+        messages.success(request, f"Category '{name}' updated.")
+    return redirect('system_settings')
+
+
+@login_required
+@admin_required
+@require_POST
+def category_delete_view(request, category_id):
+    cat = get_object_or_404(Category, id=category_id)
+    count = cat.books.count()
+    if count:
+        messages.error(request, f"Cannot delete '{cat.name}': {count} book(s) still use it. Move them to another category first.")
+    else:
+        name = cat.name
+        cat.delete()
+        log_audit(request, 'DELETE_CATEGORY', 'Category', category_id, f"Deleted category '{name}'")
+        messages.success(request, f"Category '{name}' deleted.")
+    return redirect('system_settings')
+
+
+# ==========================================
+# ADMIN: LIBRARIAN ACCOUNT MANAGEMENT
+# ==========================================
+
+def _librarian_or_404(user_id):
+    """Only LIBRARIAN accounts can be managed here - never admins, never members."""
+    return get_object_or_404(User.objects.select_related('profile'), pk=user_id, profile__role='LIBRARIAN')
+
+
+def _password_problem(password, user=None):
+    try:
+        validate_password(password, user=user)
+    except ValidationError as e:
+        return " ".join(e.messages)
+    return ''
+
+
+@login_required
+@admin_required
+def librarian_list_view(request):
+    librarians = (
+        User.objects.filter(profile__role='LIBRARIAN').select_related('profile')
+        .annotate(handled=Count('issued_transactions'))
+        .order_by('-is_active', 'first_name', 'username')
+    )
+    return render(request, 'library_app/librarian_list.html', {'librarians': librarians})
+
+
+@login_required
+@admin_required
+@require_POST
+def librarian_create_view(request):
+    username = request.POST.get('username', '').strip()
+    password = request.POST.get('password', '')
+    first_name = request.POST.get('first_name', '').strip()
+    last_name = request.POST.get('last_name', '').strip()
+    email = request.POST.get('email', '').strip()
+    phone = request.POST.get('phone', '').strip()
+
+    if not username or not first_name:
+        messages.error(request, "Username and first name are required.")
+    elif User.objects.filter(username__iexact=username).exists():
+        messages.error(request, f"Username '{username}' is already taken.")
+    elif email and User.objects.filter(email__iexact=email).exists():
+        messages.error(request, f"Email '{email}' is already used by another account.")
+    elif _password_problem(password, User(username=username, first_name=first_name, last_name=last_name, email=email)):
+        messages.error(request, _password_problem(password, User(username=username, first_name=first_name, last_name=last_name, email=email)))
+    else:
+        user = User.objects.create_user(username=username, email=email, password=password,
+                                        first_name=first_name, last_name=last_name)
+        UserProfile.objects.create(user=user, role='LIBRARIAN', phone=phone)
+        log_audit(request, 'CREATE_LIBRARIAN', 'User', user.id, f"Created librarian account '{username}'")
+        messages.success(request, f"Librarian account '{username}' created.")
+    return redirect('librarian_list')
+
+
+@login_required
+@admin_required
+@require_POST
+def librarian_update_view(request, user_id):
+    target = _librarian_or_404(user_id)
+    email = request.POST.get('email', '').strip()
+    if email and User.objects.filter(email__iexact=email).exclude(pk=target.pk).exists():
+        messages.error(request, f"Email '{email}' is already used by another account.")
+        return redirect('librarian_list')
+    first_name = request.POST.get('first_name', '').strip()
+    if not first_name:
+        messages.error(request, "First name is required.")
+        return redirect('librarian_list')
+
+    target.first_name = first_name
+    target.last_name = request.POST.get('last_name', '').strip()
+    target.email = email
+    target.save()  # the role is deliberately never editable here
+    target.profile.phone = request.POST.get('phone', '').strip()
+    target.profile.save()
+    log_audit(request, 'UPDATE_LIBRARIAN', 'User', target.id, f"Updated details of librarian '{target.username}'")
+    messages.success(request, f"Account '{target.username}' updated.")
+    return redirect('librarian_list')
+
+
+@login_required
+@admin_required
+@require_POST
+def librarian_toggle_active_view(request, user_id):
+    target = _librarian_or_404(user_id)
+    if target == request.user:
+        messages.error(request, "You cannot deactivate your own account.")
+        return redirect('librarian_list')
+    target.is_active = not target.is_active
+    target.save(update_fields=['is_active'])
+    state = 'activated' if target.is_active else 'deactivated'
+    log_audit(request, 'ACTIVATE_LIBRARIAN' if target.is_active else 'DEACTIVATE_LIBRARIAN', 'User', target.id,
+              f"Librarian '{target.username}' {state}")
+    messages.success(request, f"Account '{target.username}' {state}.")
+    return redirect('librarian_list')
+
+
+@login_required
+@admin_required
+@require_POST
+def librarian_reset_password_view(request, user_id):
+    target = _librarian_or_404(user_id)
+    password = request.POST.get('password', '').strip()
+    generated = not password
+    if generated:
+        password = secrets.token_urlsafe(9)
+    problem = _password_problem(password, target)
+    if problem:
+        messages.error(request, problem)
+        return redirect('librarian_list')
+    target.set_password(password)  # also signs the librarian out of any open session
+    target.save()
+    log_audit(request, 'RESET_LIBRARIAN_PASSWORD', 'User', target.id, f"Password reset for librarian '{target.username}'")  # never log the password
+    if generated:
+        messages.success(request, f"New temporary password for '{target.username}': {password}  (shown once - give it to them securely and ask them to keep it private.)")
+    else:
+        messages.success(request, f"Password for '{target.username}' was changed.")
+    return redirect('librarian_list')
 
 
 # ==========================================
