@@ -93,7 +93,7 @@
       <a href="{% url 'librarian_list' %}" class="quick-action-btn"><span>Librarians ({{ active_librarians }} active)</span></a>
       <a href="{% url 'system_settings' %}" class="quick-action-btn"><span>System Settings</span></a>
       <a href="{% url 'reports_dashboard' %}" class="quick-action-btn"><span>Reports &amp; Exports</span></a>
-      <a href="{% url 'user_management' %}" class="quick-action-btn"><span>User Accounts &amp; Backups</span></a>
+      <a href="{% url 'backup_management' %}" class="quick-action-btn"><span>Database Backups &amp; Data Protection</span></a>
     </div>
     <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.85rem;">
       Current rules: ₱{{ rules.daily_fine_rate }} fine per day • {{ rules.weekly_borrow_limit }} books per week • loan periods set by borrowing tier • {{ rules.max_renewals }} renewal(s) per loan • {{ total_members }} registered members • ₱{{ unpaid_fines }} unpaid fines

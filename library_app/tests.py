@@ -235,6 +235,7 @@ class BorrowRequestWorkflowTests(TestCase):
         r2.refresh_from_db(); r3.refresh_from_db(); self.book.refresh_from_db()
         self.assertEqual((r2.status, r3.status), ('READY', 'PENDING'))  # earliest first
         self.assertEqual(self.book.available_copies, 0)
+        self.assertTrue(23 <= (r2.pickup_deadline - r2.notified_at).total_seconds() / 3600 <= 25)
         Reservation.objects.filter(pk=r2.pk).update(pickup_deadline=timezone.now() - timedelta(minutes=1))
         expire_stale_holds()                                           # r2 didn't collect
         r2.refresh_from_db(); r3.refresh_from_db()
