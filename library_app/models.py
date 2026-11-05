@@ -21,9 +21,9 @@ class LibrarySettings(models.Model):
         'Books a member may collect per week', default=5,
         validators=[MinValueValidator(1), MaxValueValidator(50)],
     )
-    borrow_period_days = models.PositiveSmallIntegerField(
-        'Borrowing duration (days)', default=14,
-        validators=[MinValueValidator(1), MaxValueValidator(365)],
+    max_renewals = models.PositiveSmallIntegerField(
+        'Renewals allowed per loan', default=1,
+        validators=[MaxValueValidator(5)],
     )
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
@@ -40,12 +40,52 @@ class LibrarySettings(models.Model):
         obj, _ = cls.objects.get_or_create(pk=1, defaults={
             'daily_fine_rate': Decimal(str(getattr(settings, 'DAILY_FINE_RATE', '20.00'))),
             'weekly_borrow_limit': getattr(settings, 'WEEKLY_BORROW_LIMIT', 5),
-            'borrow_period_days': getattr(settings, 'BORROW_PERIOD_DAYS', 14),
+            'max_renewals': getattr(settings, 'MAX_RENEWALS', 1),
         })
         return obj
 
     def __str__(self):
         return "Library settings"
+
+
+class BorrowingTier(models.Model):
+    """A named loan length (e.g. Short-term = 7 days). Books and categories point at a tier.
+    Editing a tier only affects NEW loans: every loan stores its own due date and day count."""
+    name = models.CharField(max_length=50, unique=True)
+    days = models.PositiveSmallIntegerField(
+        'Borrowing duration (days)', validators=[MinValueValidator(1), MaxValueValidator(365)],
+    )
+    is_active = models.BooleanField(default=True)
+    is_default = models.BooleanField(default=False)  # used when neither the book nor its category names a tier
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['days', 'name']
+
+    def __str__(self):
+        return f"{self.name} ({self.days} days)"
+
+    @classmethod
+    def get_default(cls):
+        return cls.objects.filter(is_default=True, is_active=True).first()
+
+
+class LoanTerms:
+    """Result of working out how long a book may be borrowed, and where that rule came from."""
+    __slots__ = ('days', 'name', 'tier', 'source')
+
+    SOURCE_LABELS = {'book': 'set on this book', 'category': 'category default',
+                     'default': 'library default', 'fallback': 'built-in default'}
+
+    def __init__(self, days, name, tier, source):
+        self.days, self.name, self.tier, self.source = days, name, tier, source
+
+    @property
+    def source_label(self):
+        return self.SOURCE_LABELS[self.source]
+
+    def __str__(self):
+        return f"{self.name} ({self.days} days)"
 
 
 class UserProfile(models.Model):
@@ -77,6 +117,10 @@ class UserProfile(models.Model):
 class Category(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True, null=True)
+    borrowing_tier = models.ForeignKey(
+        BorrowingTier, on_delete=models.SET_NULL, null=True, blank=True, related_name='categories',
+        help_text='Default loan period for books in this category. Empty = library default.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -166,6 +210,10 @@ class Book(models.Model):
     total_copies = models.PositiveIntegerField(default=1)
     available_copies = models.PositiveIntegerField(default=1)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='AVAILABLE')
+    borrowing_tier = models.ForeignKey(
+        BorrowingTier, on_delete=models.SET_NULL, null=True, blank=True, related_name='books',
+        help_text="Overrides the category's loan period for this book. Empty = use the category default.",
+    )
     cover_image_url = models.CharField(max_length=500, blank=True, default='')
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -179,6 +227,17 @@ class Book(models.Model):
         if clean_isbn:
             return f"https://covers.openlibrary.org/b/isbn/{clean_isbn}-M.jpg"
         return "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=400&q=80"
+
+    def resolve_loan_terms(self):
+        """Loan period for this book: its own tier, else its category's, else the library default.
+        Inactive tiers are skipped. Returns a LoanTerms."""
+        for source, tier in (('book', self.borrowing_tier), ('category', self.category.borrowing_tier)):
+            if tier and tier.is_active:
+                return LoanTerms(tier.days, tier.name, tier, source)
+        tier = BorrowingTier.get_default()
+        if tier:
+            return LoanTerms(tier.days, tier.name, tier, 'default')
+        return LoanTerms(getattr(settings, 'BORROW_PERIOD_DAYS', 14), 'Standard', None, 'fallback')
 
     @property
     def availability_percent(self):
@@ -226,6 +285,9 @@ class BorrowTransaction(models.Model):
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='BORROWED')
     fine_amount = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('0.00'))
     daily_fine_rate = models.DecimalField(max_digits=8, decimal_places=2, default=Decimal('20.00'))  # rate in force when the loan was created
+    loan_days = models.PositiveSmallIntegerField(default=14)  # length of the loan (and of each renewal), fixed at checkout
+    tier_name = models.CharField(max_length=50, blank=True)  # borrowing tier in force at checkout
+    renewal_count = models.PositiveSmallIntegerField(default=0)
     fine_paid = models.BooleanField(default=False)
     reading_progress = models.PositiveIntegerField(default=0)  # e.g. 6% or 0% reading completion
     notes = models.TextField(blank=True)

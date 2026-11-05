@@ -103,6 +103,7 @@
             {% else %}
               <span class="status-badge neutral">{{ book.status }}</span>
             {% endif %}
+            {% if book.demand.level == 'HIGH' %}<span class="status-badge overdue" title="{{ book.demand.reason }}">High demand</span>{% endif %}
           </td>
           <!-- Actions -->
           <td style="text-align: right;">

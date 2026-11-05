@@ -59,7 +59,7 @@
               <select name="book_id" id="borrow-book-select" class="form-control" required onchange="updateBorrowSummary()">
                 <option value="" disabled selected>Select a book from the available catalog...</option>
                 {% for b in available_books %}
-                  <option value="{{ b.id }}" data-title="{{ b.title }}" data-author="{{ b.author }}" data-shelf="{{ b.shelf_number|default:'General Stacks' }}">
+                  <option value="{{ b.id }}" data-title="{{ b.title }}" data-author="{{ b.author }}" data-shelf="{{ b.shelf_number|default:'General Stacks' }}" data-days="{{ b.loan_terms.days }}" data-tier="{{ b.loan_terms.name }}">
                     {{ b.title }} by {{ b.author }} ({{ b.available_copies }} copies available)
                   </option>
                 {% endfor %}
@@ -68,9 +68,8 @@
 
             <div class="form-group" style="margin-bottom: 0;">
               <label class="form-label">Loan Duration</label>
-              <select name="borrow_days" id="borrow-days-select" class="form-control" onchange="updateBorrowSummary()">
-                <option value="{{ rules.borrow_period_days }}" selected>{{ rules.borrow_period_days }} Days (Library Standard)</option>
-              </select>
+              <input type="text" id="borrow-days-display" class="form-control" value="Select a book to see its loan period" readonly>
+              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Set by the book's borrowing tier. The period starts now, when the book is handed over.</div>
             </div>
           </div>
         </div>
@@ -264,7 +263,6 @@ function switchCirculationTab(tab) {
 function updateBorrowSummary() {
   const memberSel = document.getElementById('borrow-member-select');
   const bookSel = document.getElementById('borrow-book-select');
-  const daysSel = document.getElementById('borrow-days-select');
 
   const selectedMember = memberSel.options[memberSel.selectedIndex];
   if (selectedMember && selectedMember.value) {
@@ -278,7 +276,15 @@ function updateBorrowSummary() {
     document.getElementById('sum-shelf').textContent = selectedBook.getAttribute('data-shelf');
   }
 
-  const days = parseInt(daysSel.value || '14', 10);
+  const daysDisplay = document.getElementById('borrow-days-display');
+  const days = (selectedBook && selectedBook.value) ? parseInt(selectedBook.getAttribute('data-days'), 10) : 0;
+  if (days) {
+    daysDisplay.value = days + ' days (' + selectedBook.getAttribute('data-tier') + ')';
+  } else {
+    daysDisplay.value = 'Select a book to see its loan period';
+    document.getElementById('sum-due-date').textContent = '-';
+    return;
+  }
   const targetDate = new Date();
   targetDate.setDate(targetDate.getDate() + days);
   const options = { year: 'numeric', month: 'short', day: 'numeric' };

@@ -18,7 +18,7 @@ from django.db.models import Count, Sum
 
 from .services import expire_stale_holds
 from .models import (
-    UserProfile, Member, Book, BorrowTransaction,
+    UserProfile, Member, Book, BorrowTransaction, BorrowingTier,
     Reservation, FinePayment, Notification, AuditLog, ACTIVE_LOAN_STATUSES
 )
 
@@ -189,7 +189,7 @@ def generate_receipt_pdf(payment):
 def create_database_backup():
     """Exports all key models to JSON format."""
     data = {}
-    models_to_backup = [UserProfile, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, AuditLog]
+    models_to_backup = [UserProfile, BorrowingTier, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, AuditLog]
     for model in models_to_backup:
         serialized = serialize('json', model.objects.all())
         data[model.__name__] = json.loads(serialized)

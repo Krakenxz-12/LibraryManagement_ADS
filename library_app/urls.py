@@ -25,6 +25,7 @@ urlpatterns = [
     path('transactions/', views.transaction_list_view, name='transaction_list'),
     path('transactions/borrow/', views.borrow_create_view, name='borrow_create'),
     path('transactions/<int:transaction_id>/return/', views.return_process_view, name='return_process'),
+    path('transactions/<int:transaction_id>/renew/', views.renew_loan_view, name='renew_loan'),
 
     # Module 4: Reservations
     path('reservations/', views.reservation_list_view, name='reservation_list'),
@@ -60,6 +61,11 @@ urlpatterns = [
     path('management/settings/categories/new/', views.category_create_view, name='category_create'),
     path('management/settings/categories/<int:category_id>/edit/', views.category_update_view, name='category_update'),
     path('management/settings/categories/<int:category_id>/delete/', views.category_delete_view, name='category_delete'),
+    path('management/settings/tiers/new/', views.tier_create_view, name='tier_create'),
+    path('management/settings/tiers/<int:tier_id>/edit/', views.tier_update_view, name='tier_update'),
+    path('management/settings/tiers/<int:tier_id>/toggle/', views.tier_toggle_view, name='tier_toggle'),
+    path('management/settings/tiers/<int:tier_id>/make-default/', views.tier_make_default_view, name='tier_make_default'),
+    path('management/settings/books/<int:book_id>/apply-tier/', views.apply_tier_suggestion_view, name='apply_tier_suggestion'),
     path('management/librarians/', views.librarian_list_view, name='librarian_list'),
     path('management/librarians/new/', views.librarian_create_view, name='librarian_create'),
     path('management/librarians/<int:user_id>/edit/', views.librarian_update_view, name='librarian_update'),

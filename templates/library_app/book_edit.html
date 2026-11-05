@@ -63,6 +63,28 @@
       </div>
 
       <div class="form-group">
+        <label class="form-label">Borrowing Tier</label>
+        {% if can_assign_tier %}
+        <select name="borrowing_tier" class="form-control">
+          <option value="">Use category default ({{ book.category.borrowing_tier.name|default:"library default" }})</option>
+          {% if book.borrowing_tier and not book.borrowing_tier.is_active %}
+          <option value="{{ book.borrowing_tier.id }}" selected>{{ book.borrowing_tier }} - inactive</option>
+          {% endif %}
+          {% for t in tiers %}
+          <option value="{{ t.id }}" {% if book.borrowing_tier_id == t.id %}selected{% endif %}>{{ t.name }} ({{ t.days }} days)</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input type="text" class="form-control" value="{{ loan_terms }}" disabled>
+        {% endif %}
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Currently {{ loan_terms.days }} days ({{ loan_terms.source_label }}). {{ demand.label }}: {{ demand.reason }}.{% if demand.is_new %} Newly acquired.{% endif %}
+          {% if suggested_tier and suggested_tier.days != loan_terms.days %}Suggested: <strong>{{ suggested_tier.name }} ({{ suggested_tier.days }} days)</strong>.{% endif %}
+          {% if not can_assign_tier %}Only an Admin can change the tier.{% endif %}
+        </div>
+      </div>
+
+      <div class="form-group">
         <label class="form-label">Cover Image URL</label>
         <input type="url" name="cover_image_url" class="form-control" value="{{ book.cover_image_url }}" placeholder="https://... cover image link">
       </div>

@@ -96,7 +96,7 @@
       <a href="{% url 'user_management' %}" class="quick-action-btn"><span>User Accounts &amp; Backups</span></a>
     </div>
     <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.85rem;">
-      Current rules: ₱{{ rules.daily_fine_rate }} fine per day • {{ rules.weekly_borrow_limit }} books per week • {{ rules.borrow_period_days }}-day loans • {{ total_members }} registered members • ₱{{ unpaid_fines }} unpaid fines
+      Current rules: ₱{{ rules.daily_fine_rate }} fine per day • {{ rules.weekly_borrow_limit }} books per week • loan periods set by borrowing tier • {{ rules.max_renewals }} renewal(s) per loan • {{ total_members }} registered members • ₱{{ unpaid_fines }} unpaid fines
     </div>
   </div>
 </div>
@@ -299,6 +299,7 @@
           <th>Date Borrowed</th>
           <th>Return Due Date</th>
           <th>Status</th>
+          <th style="text-align: right;">Renewal</th>
         </tr>
       </thead>
       <tbody>
@@ -311,6 +312,7 @@
             <span style="font-weight: 600; {% if b.is_currently_overdue %}color: #b91c1c;{% endif %}">
               {{ b.due_date|date:"F d, Y" }}
             </span>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">{{ b.loan_days }}-day loan{% if b.renewal_count %} &bull; renewed {{ b.renewal_count }}&times;{% endif %}</div>
           </td>
           <td>
             {% if b.is_currently_overdue %}
@@ -319,10 +321,20 @@
               <span class="status-badge borrowed">Borrowed</span>
             {% endif %}
           </td>
+          <td style="text-align: right;">
+            {% if not b.renew_block %}
+            <form action="{% url 'renew_loan' b.id %}" method="POST" style="display: inline;">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-secondary btn-sm">Renew +{{ b.loan_days }} days</button>
+            </form>
+            {% else %}
+            <span style="font-size: 0.75rem; color: var(--text-muted);">{{ b.renew_block }}</span>
+            {% endif %}
+          </td>
         </tr>
         {% empty %}
         <tr>
-          <td colspan="5" class="empty-state">
+          <td colspan="6" class="empty-state">
             <div class="empty-state-title">You have no books borrowed right now</div>
             <div class="empty-state-text">Visit the catalog to find and reserve books for your studies or reading leisure.</div>
           </td>

@@ -64,13 +64,18 @@ def _notify_staff(title, message):
 
 # ---------------------------------------------------------------- stock helpers
 def _create_loan(member, book, user, days=None):
+    """Start a loan NOW (the moment the librarian hands the book over). The period comes from the
+    book's borrowing tier, and the day count and tier name are stored on the loan so later edits to
+    the tier never change it."""
     rules = LibrarySettings.get()
-    days = days or rules.borrow_period_days
+    terms = book.resolve_loan_terms()
+    days = days or terms.days
     issue_date = timezone.localdate()
     return BorrowTransaction.objects.create(
         transaction_code=BorrowTransaction.generate_transaction_code(),
         member=member, book=book, issued_by=user,
         issue_date=issue_date, due_date=issue_date + timedelta(days=days),
+        loan_days=days, tier_name=terms.name,
         daily_fine_rate=rules.daily_fine_rate,
         status='BORROWED',
     )
@@ -109,7 +114,8 @@ def promote_reservations(book):
         _notify(
             res.member.user, f"Reserved Book Ready: '{book.title}'",
             f"'{book.title}' is being held for you at shelf #{book.shelf_number}. "
-            f"Please collect it from the librarian before {_fmt(res.pickup_deadline)}, or the hold expires.",
+            f"Please collect it from the librarian before {_fmt(res.pickup_deadline)}, or the hold expires. "
+            f"Your {book.resolve_loan_terms().days}-day loan starts when you collect it.",
             'RESERVATION_READY',
         )
         promoted.append(res)
@@ -170,7 +176,8 @@ def approve_request(request_id, user):
     _notify(
         req.member.user, f"Request Approved: '{book.title}'",
         f"Your request was approved. Collect '{book.title}' (shelf #{book.shelf_number}) from the librarian "
-        f"before {_fmt(req.pickup_deadline)}, or it will be released.",
+        f"before {_fmt(req.pickup_deadline)}, or it will be released. "
+        f"Your {book.resolve_loan_terms().days}-day loan starts when you collect it.",
     )
     return req
 
@@ -296,6 +303,48 @@ def checkout_at_desk(member, book_id, user, days=None):
             res.status = 'FULFILLED'
             res.save(update_fields=['status'])
         book.update_availability_status()
+    return txn
+
+
+# ---------------------------------------------------------------- renewals
+def renewal_block_reason(txn, today=None):
+    """Why this loan cannot be renewed right now (a message safe to show), or None if it can."""
+    today = today or timezone.localdate()
+    max_renewals = LibrarySettings.get().max_renewals
+    if txn.status == 'RETURNED':
+        return "This book has already been returned."
+    if max_renewals <= 0:
+        return "Renewals are turned off."
+    if txn.status == 'OVERDUE' or txn.due_date < today:
+        return "Overdue books cannot be renewed. Please return it."
+    if txn.renewal_count >= max_renewals:
+        return "Renewal limit reached for this loan." if max_renewals > 1 else "Already renewed once."
+    member = txn.member
+    if member.status != 'ACTIVE':
+        return "Membership is not active."
+    if member.balance > 0:
+        return "Unpaid fines must be settled first."
+    if txn.book.reservations.filter(status__in=['PENDING', 'READY']).exists():
+        return "Another member has reserved this book."
+    return None
+
+
+def renew_loan(transaction_id):
+    """Extend a loan by its own original length, counted from the current due date."""
+    with transaction.atomic():
+        txn = BorrowTransaction.objects.select_for_update().select_related('member__user').get(pk=transaction_id)
+        book = Book.objects.select_for_update().get(pk=txn.book_id)  # same lock reservations take
+        txn.book = book
+        reason = renewal_block_reason(txn)
+        if reason:
+            raise HoldError(reason)
+        txn.due_date += timedelta(days=txn.loan_days or 14)
+        txn.renewal_count += 1
+        txn.save(update_fields=['due_date', 'renewal_count', 'updated_at'])
+    _notify(
+        txn.member.user, f"Loan Renewed: '{book.title}'",
+        f"'{book.title}' is now due on {txn.due_date.strftime('%b %d, %Y')}.",
+    )
     return txn
 
 

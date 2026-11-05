@@ -19,14 +19,16 @@ from django.utils import timezone
 
 from .models import (
     UserProfile, Category, Member, Book, BorrowTransaction,
-    Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, ACTIVE_LOAN_STATUSES
+    Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, BorrowingTier, ACTIVE_LOAN_STATUSES
 )
 from .forms import LibrarySettingsForm
 from .services import (
     HoldError, weekly_allowance, expire_stale_holds, promote_reservations, submit_borrow_request,
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
     cancel_reservation as cancel_reservation_service, confirm_reservation_pickup, checkout_at_desk,
+    renew_loan, renewal_block_reason,
 )
+from .demand import demand_for_books, suggest_tier, tier_suggestions
 from .reports import (
     REPORT_TITLES, REPORT_TYPES, build_report, category_rows, export_excel, export_pdf,
     overview_stats, parse_range, top_books, top_borrowers,
@@ -37,6 +39,11 @@ from .utils import (
     generate_receipt_pdf,
     create_database_backup, restore_database_backup
 )
+
+
+def _is_admin(user):
+    profile = getattr(user, 'profile', None)
+    return bool(user.is_superuser or (profile and profile.is_admin))
 
 
 # ==========================================
@@ -108,7 +115,12 @@ def dashboard_view(request):
     if role == 'MEMBER':
         member_profile = Member.objects.filter(user=user).first()
         if member_profile:
-            member_active_borrows = BorrowTransaction.objects.filter(member=member_profile, status__in=ACTIVE_LOAN_STATUSES)
+            member_active_borrows = list(
+                BorrowTransaction.objects.filter(member=member_profile, status__in=ACTIVE_LOAN_STATUSES)
+                .select_related('book', 'member')
+            )
+            for loan in member_active_borrows:
+                loan.renew_block = renewal_block_reason(loan)
             member_reservations = Reservation.objects.filter(member=member_profile).exclude(status__in=['FULFILLED', 'CANCELLED'])
 
     # Recent list of books for visual carousel/grid
@@ -355,6 +367,11 @@ def book_list_view(request):
     else:
         books = books.order_by('title')
 
+    books = list(books.select_related('borrowing_tier', 'category__borrowing_tier'))
+    demand = demand_for_books(books)
+    for b in books:
+        b.demand = demand[b.id]
+
     categories = Category.objects.all()
 
     context = {
@@ -426,14 +443,29 @@ def book_edit_view(request, book_id):
         book.status = request.POST.get('status', book.status)
         book.cover_image_url = request.POST.get('cover_image_url', book.cover_image_url).strip()
         book.description = request.POST.get('description', '').strip()
+        tier_note = ''
+        if _is_admin(request.user):  # only the Admin assigns borrowing tiers
+            tier_id = request.POST.get('borrowing_tier', '')
+            new_tier = BorrowingTier.objects.filter(pk=tier_id, is_active=True).first() if tier_id else None
+            if new_tier != book.borrowing_tier and (new_tier or not tier_id):
+                tier_note = f" Borrowing tier: {book.borrowing_tier or 'category default'} -> {new_tier or 'category default'}."
+                book.borrowing_tier = new_tier
         book.save()
 
-        log_audit(request, 'UPDATE_BOOK', 'Book', book.id, f"Updated book '{book.title}'")
+        log_audit(request, 'UPDATE_BOOK', 'Book', book.id, f"Updated book '{book.title}'.{tier_note}")
         messages.success(request, f"Book '{book.title}' updated successfully.")
         return redirect('book_detail', book_id=book.id)
 
     categories = Category.objects.all()
-    return render(request, 'library_app/book_edit.html', {'book': book, 'categories': categories})
+    demand = demand_for_books([book])[book.id]
+    return render(request, 'library_app/book_edit.html', {
+        'book': book, 'categories': categories,
+        'tiers': BorrowingTier.objects.filter(is_active=True),
+        'can_assign_tier': _is_admin(request.user),
+        'loan_terms': book.resolve_loan_terms(),
+        'demand': demand,
+        'suggested_tier': suggest_tier(demand),
+    })
 
 
 @login_required
@@ -455,7 +487,8 @@ def book_delete_view(request, book_id):
 
 @login_required
 def book_detail_view(request, book_id):
-    book = get_object_or_404(Book.objects.select_related('category'), id=book_id)
+    book = get_object_or_404(Book.objects.select_related('category__borrowing_tier', 'borrowing_tier'), id=book_id)
+    demand = demand_for_books([book])[book.id]
     active_borrows = book.borrows.filter(status__in=ACTIVE_LOAN_STATUSES).select_related('member')
     reservations = book.reservations.select_related('member').all()
     categories = Category.objects.all()
@@ -472,6 +505,9 @@ def book_detail_view(request, book_id):
 
     context = {
         'book': book,
+        'loan_terms': book.resolve_loan_terms(),
+        'demand': demand,
+        'suggested_tier': suggest_tier(demand),
         'categories': categories,
         'active_borrows': active_borrows,
         'reservations': reservations,
@@ -515,7 +551,12 @@ def transaction_list_view(request):
             txn.fine_amount = txn.compute_fine()
 
     members = Member.objects.filter(status='ACTIVE')
-    available_books = Book.objects.filter(available_copies__gt=0, status__in=['AVAILABLE', 'RESERVED'])
+    available_books = list(
+        Book.objects.filter(available_copies__gt=0, status__in=['AVAILABLE', 'RESERVED'])
+        .select_related('borrowing_tier', 'category__borrowing_tier')
+    )
+    for b in available_books:
+        b.loan_terms = b.resolve_loan_terms()
 
     context = {
         'transactions': transactions,
@@ -535,13 +576,13 @@ def borrow_create_view(request):
         member = get_object_or_404(Member, id=request.POST.get('member_id'))
         book = get_object_or_404(Book, id=request.POST.get('book_id'))
         try:
-            txn = checkout_at_desk(member, book.id, request.user)  # duration comes from Library Settings
+            txn = checkout_at_desk(member, book.id, request.user)  # loan length comes from the book's borrowing tier
         except HoldError as e:
             messages.error(request, str(e))
             return redirect('transaction_list')
 
         log_audit(request, 'CHECKOUT_BOOK', 'BorrowTransaction', txn.id, f"Issued '{book.title}' to {member.full_name} ({txn.transaction_code})")
-        messages.success(request, f"Book '{book.title}' successfully checked out to {member.full_name}. Due on {txn.due_date.strftime('%b %d, %Y')}.")
+        messages.success(request, f"Book '{book.title}' successfully checked out to {member.full_name}. Due on {txn.due_date.strftime('%b %d, %Y')} ({txn.loan_days}-day {txn.tier_name} loan).")
         return redirect('transaction_list')
 
     return redirect('transaction_list')
@@ -589,6 +630,27 @@ def return_process_view(request, transaction_id):
 
     log_audit(request, 'RETURN_BOOK', 'BorrowTransaction', txn.id, f"Processed return for {txn.transaction_code}. Fine: ₱{fine:.2f}")
     return redirect('transaction_list')
+
+
+@login_required
+@require_POST
+def renew_loan_view(request, transaction_id):
+    """A member renews their own loan; staff may renew on a member's behalf."""
+    txn = get_object_or_404(BorrowTransaction.objects.select_related('member__user', 'book'), id=transaction_id)
+    profile = getattr(request.user, 'profile', None)
+    is_staff_user = bool(request.user.is_superuser or (profile and profile.is_librarian))
+    if not is_staff_user and txn.member.user_id != request.user.id:
+        messages.error(request, "Unauthorized action.")
+        return redirect('dashboard')
+    try:
+        txn = renew_loan(txn.id)
+    except HoldError as e:
+        messages.warning(request, str(e))
+    else:
+        log_audit(request, 'RENEW_LOAN', 'BorrowTransaction', txn.id,
+                  f"Renewed '{txn.book.title}' for {txn.member.full_name} ({txn.transaction_code}); new due date {txn.due_date}")
+        messages.success(request, f"'{txn.book.title}' renewed. New due date: {txn.due_date.strftime('%b %d, %Y')}.")
+    return redirect('transaction_list' if is_staff_user else 'dashboard')
 
 
 # ==========================================
@@ -1001,7 +1063,7 @@ def export_report_view(request):
 SETTING_LABELS = {
     'daily_fine_rate': 'Fine per overdue day',
     'weekly_borrow_limit': 'Weekly borrowing limit',
-    'borrow_period_days': 'Borrowing duration (days)',
+    'max_renewals': 'Renewals allowed per loan',
 }
 
 
@@ -1031,8 +1093,25 @@ def system_settings_view(request):
     return render(request, 'library_app/system_settings.html', {
         'form': form,
         'current': LibrarySettings.get(),
-        'categories': Category.objects.annotate(book_count=Count('books')).order_by('name'),
+        'categories': Category.objects.select_related('borrowing_tier').annotate(book_count=Count('books')).order_by('name'),
+        'tiers': BorrowingTier.objects.annotate(
+            book_count=Count('books', distinct=True), category_count=Count('categories', distinct=True),
+        ).order_by('-is_active', 'days', 'name'),
+        'active_tiers': BorrowingTier.objects.filter(is_active=True),
+        'suggestions': tier_suggestions()[:25],
     })
+
+
+def _posted_tier(request, keep=None):
+    """The active tier chosen in a form ('' = none). The tier a record already has is kept even if it
+    was deactivated since, so saving an unrelated edit never silently clears it."""
+    tier_id = request.POST.get('borrowing_tier', '')
+    if not tier_id:
+        return None
+    tier = BorrowingTier.objects.filter(pk=tier_id).first()
+    if tier and (tier.is_active or tier == keep):
+        return tier
+    return keep
 
 
 def _category_name_taken(name, exclude_id=None):
@@ -1052,7 +1131,10 @@ def category_create_view(request):
     elif _category_name_taken(name):
         messages.error(request, f"A category named '{name}' already exists.")
     else:
-        cat = Category.objects.create(name=name, description=request.POST.get('description', '').strip())
+        cat = Category.objects.create(
+            name=name, description=request.POST.get('description', '').strip(),
+            borrowing_tier=_posted_tier(request),
+        )
         log_audit(request, 'CREATE_CATEGORY', 'Category', cat.id, f"Added category '{name}'")
         messages.success(request, f"Category '{name}' added.")
     return redirect('system_settings')
@@ -1072,8 +1154,10 @@ def category_update_view(request, category_id):
         old = cat.name
         cat.name = name
         cat.description = request.POST.get('description', '').strip()
+        cat.borrowing_tier = _posted_tier(request, keep=cat.borrowing_tier)
         cat.save()
-        log_audit(request, 'UPDATE_CATEGORY', 'Category', cat.id, f"Renamed/edited category '{old}' -> '{name}'")
+        log_audit(request, 'UPDATE_CATEGORY', 'Category', cat.id,
+                  f"Renamed/edited category '{old}' -> '{name}' (borrowing tier: {cat.borrowing_tier or 'library default'})")
         messages.success(request, f"Category '{name}' updated.")
     return redirect('system_settings')
 
@@ -1091,6 +1175,114 @@ def category_delete_view(request, category_id):
         cat.delete()
         log_audit(request, 'DELETE_CATEGORY', 'Category', category_id, f"Deleted category '{name}'")
         messages.success(request, f"Category '{name}' deleted.")
+    return redirect('system_settings')
+
+
+# ==========================================
+# ADMIN: BORROWING TIERS
+# ==========================================
+
+def _read_tier_form(request, exclude_id=None):
+    """(name, days, error) from a tier form."""
+    name = request.POST.get('name', '').strip()
+    try:
+        days = int(request.POST.get('days', ''))
+    except ValueError:
+        days = 0
+    qs = BorrowingTier.objects.filter(name__iexact=name)
+    if exclude_id:
+        qs = qs.exclude(id=exclude_id)
+    if not name or len(name) > 50:
+        return name, days, "Tier name is required (50 characters max)."
+    if not 1 <= days <= 365:
+        return name, days, "Borrowing duration must be between 1 and 365 days."
+    if qs.exists():
+        return name, days, f"A tier named '{name}' already exists."
+    return name, days, None
+
+
+@login_required
+@admin_required
+@require_POST
+def tier_create_view(request):
+    name, days, error = _read_tier_form(request)
+    if error:
+        messages.error(request, error)
+    else:
+        tier = BorrowingTier.objects.create(name=name, days=days)
+        log_audit(request, 'CREATE_TIER', 'BorrowingTier', tier.id, f"Added borrowing tier '{name}' ({days} days)")
+        messages.success(request, f"Borrowing tier '{name}' ({days} days) added.")
+    return redirect('system_settings')
+
+
+@login_required
+@admin_required
+@require_POST
+def tier_update_view(request, tier_id):
+    tier = get_object_or_404(BorrowingTier, id=tier_id)
+    name, days, error = _read_tier_form(request, exclude_id=tier.id)
+    if error:
+        messages.error(request, error)
+    elif (name, days) == (tier.name, tier.days):
+        messages.info(request, "No changes to save.")
+    else:
+        details = f"Borrowing tier '{tier.name}' ({tier.days} days) -> '{name}' ({days} days)"
+        tier.name, tier.days = name, days
+        tier.save()
+        log_audit(request, 'UPDATE_TIER', 'BorrowingTier', tier.id, details)
+        messages.success(request, f"Tier '{name}' updated. Books already on loan keep their original due dates.")
+    return redirect('system_settings')
+
+
+@login_required
+@admin_required
+@require_POST
+def tier_toggle_view(request, tier_id):
+    tier = get_object_or_404(BorrowingTier, id=tier_id)
+    if tier.is_active and tier.is_default:
+        messages.error(request, f"'{tier.name}' is the library default. Make another tier the default before deactivating it.")
+    else:
+        tier.is_active = not tier.is_active
+        tier.save(update_fields=['is_active'])
+        state = 'activated' if tier.is_active else 'deactivated'
+        log_audit(request, 'TOGGLE_TIER', 'BorrowingTier', tier.id, f"Tier '{tier.name}' {state}")
+        messages.success(request, f"Tier '{tier.name}' {state}." + (
+            "" if tier.is_active else " Books and categories using it now fall back to the library default."))
+    return redirect('system_settings')
+
+
+@login_required
+@admin_required
+@require_POST
+def tier_make_default_view(request, tier_id):
+    tier = get_object_or_404(BorrowingTier, id=tier_id)
+    if not tier.is_active:
+        messages.error(request, "Activate the tier before making it the default.")
+    else:
+        with transaction.atomic():
+            BorrowingTier.objects.exclude(pk=tier.pk).update(is_default=False)
+            tier.is_default = True
+            tier.save(update_fields=['is_default'])
+        log_audit(request, 'DEFAULT_TIER', 'BorrowingTier', tier.id, f"Library default borrowing tier is now '{tier.name}' ({tier.days} days)")
+        messages.success(request, f"'{tier.name}' is now the library default.")
+    return redirect('system_settings')
+
+
+@login_required
+@admin_required
+@require_POST
+def apply_tier_suggestion_view(request, book_id):
+    """Apply the system's suggested tier to one book (recomputed now, never taken from the form)."""
+    book = get_object_or_404(Book.objects.select_related('category__borrowing_tier', 'borrowing_tier'), id=book_id)
+    tier = suggest_tier(demand_for_books([book])[book.id])
+    if not tier:
+        messages.error(request, "There is no active borrowing tier to suggest.")
+    else:
+        old = book.resolve_loan_terms()
+        book.borrowing_tier = tier
+        book.save(update_fields=['borrowing_tier', 'updated_at'])
+        log_audit(request, 'UPDATE_BOOK', 'Book', book.id, f"Applied suggested borrowing tier to '{book.title}': {old.name} -> {tier.name}")
+        messages.success(request, f"'{book.title}' now uses the {tier.name} tier ({tier.days} days).")
     return redirect('system_settings')
 
 

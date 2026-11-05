@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import UserProfile, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, Notification, AuditLog
+from .models import BorrowingTier, UserProfile, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, Notification, AuditLog
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
@@ -7,9 +7,14 @@ class UserProfileAdmin(admin.ModelAdmin):
     list_filter = ('role',)
     search_fields = ('user__username', 'user__email', 'phone')
 
+@admin.register(BorrowingTier)
+class BorrowingTierAdmin(admin.ModelAdmin):
+    list_display = ('name', 'days', 'is_active', 'is_default')
+    list_filter = ('is_active',)
+
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ('name', 'description', 'created_at')
+    list_display = ('name', 'borrowing_tier', 'description', 'created_at')
     search_fields = ('name',)
 
 @admin.register(Member)
@@ -20,7 +25,7 @@ class MemberAdmin(admin.ModelAdmin):
 
 @admin.register(Book)
 class BookAdmin(admin.ModelAdmin):
-    list_display = ('title', 'author', 'isbn', 'category', 'shelf_number', 'available_copies', 'total_copies', 'status')
+    list_display = ('title', 'author', 'isbn', 'category', 'borrowing_tier', 'shelf_number', 'available_copies', 'total_copies', 'status')
     list_filter = ('status', 'category')
     search_fields = ('title', 'author', 'isbn')
 

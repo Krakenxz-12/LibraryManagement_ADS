@@ -138,6 +138,27 @@
         </div>
       </div>
     </div>
+
+    <div class="card">
+      <div class="card-header"><h2 class="card-title">Borrowing Period</h2></div>
+      <div class="card-body">
+        <div class="summary-row">
+          <span class="summary-label">Loan length:</span>
+          <span class="summary-val" style="color: var(--primary);">{{ loan_terms.days }} days ({{ loan_terms.name }})</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">Demand:</span>
+          <span class="summary-val">
+            <span class="status-badge {% if demand.level == 'HIGH' %}overdue{% elif demand.level == 'LOW' %}neutral{% else %}available{% endif %}">{{ demand.label }}</span>
+            {% if demand.is_new %}<span class="status-badge reserved">Newly acquired</span>{% endif %}
+          </span>
+        </div>
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">
+          The {{ loan_terms.days }}-day period starts when the librarian hands the book over, not when a request is approved.
+          {% if user.profile.is_librarian or user.is_superuser %}Basis: {{ demand.reason }}.{% if suggested_tier and suggested_tier.days != loan_terms.days %} Suggested tier: <strong>{{ suggested_tier.name }} ({{ suggested_tier.days }} days)</strong>.{% endif %}{% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 
 </div>

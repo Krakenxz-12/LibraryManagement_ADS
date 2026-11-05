@@ -41,19 +41,89 @@
 
 <div class="card">
   <div class="card-header">
+    <h2 class="card-title">Borrowing Periods</h2>
+    <button type="button" class="btn btn-primary btn-sm" onclick="openModal('add-tier-modal')">Add Tier</button>
+  </div>
+  <div class="card-body" style="padding-bottom: 0; font-size: 0.8rem; color: var(--text-muted);">
+    A book uses its own tier if it has one, otherwise its category's tier, otherwise the library default. The period starts when the librarian hands the book over (the 24-hour pickup window is separate). Editing a tier never changes books already on loan.
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr><th>Tier</th><th>Duration</th><th>Used by</th><th>Status</th><th style="text-align: right;">Action</th></tr>
+      </thead>
+      <tbody>
+        {% for t in tiers %}
+        <tr>
+          <td><strong>{{ t.name }}</strong>{% if t.is_default %} <span class="status-badge available">Default</span>{% endif %}</td>
+          <td>{{ t.days }} days</td>
+          <td>{{ t.book_count }} book(s), {{ t.category_count }} categor{{ t.category_count|pluralize:"y,ies" }}</td>
+          <td>{% if t.is_active %}<span class="status-badge available">Active</span>{% else %}<span class="status-badge neutral">Inactive</span>{% endif %}</td>
+          <td style="text-align: right;">
+            <div style="display: inline-flex; gap: 0.4rem;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openModal('edit-tier-{{ t.id }}')">Edit</button>
+              {% if t.is_active and not t.is_default %}
+              <form action="{% url 'tier_make_default' t.id %}" method="POST">{% csrf_token %}<button type="submit" class="btn btn-secondary btn-sm">Make default</button></form>
+              {% endif %}
+              {% if not t.is_default or not t.is_active %}
+              <form action="{% url 'tier_toggle' t.id %}" method="POST">{% csrf_token %}<button type="submit" class="btn btn-secondary btn-sm">{% if t.is_active %}Deactivate{% else %}Activate{% endif %}</button></form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="empty-state"><div class="empty-state-title">No borrowing tiers yet</div><div class="empty-state-text">Add one to set loan periods. Until then loans last 14 days.</div></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if suggestions %}
+<div class="card">
+  <div class="card-header"><h2 class="card-title">Suggested Tier Changes</h2></div>
+  <div class="card-body" style="padding-bottom: 0; font-size: 0.8rem; color: var(--text-muted);">
+    Based on borrowing in the last 90 days, how many people are waiting, and whether the book is newly acquired. Suggestions change nothing until you apply them.
+  </div>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr><th>Book</th><th>Demand</th><th>Now</th><th>Suggested</th><th style="text-align: right;">Action</th></tr>
+      </thead>
+      <tbody>
+        {% for r in suggestions %}
+        <tr>
+          <td><a href="{% url 'book_detail' r.book.id %}"><strong>{{ r.book.title }}</strong></a><div style="font-size: 0.75rem; color: var(--text-muted);">{{ r.demand.reason }}{% if r.demand.is_new %} &bull; newly acquired{% endif %}</div></td>
+          <td><span class="status-badge {% if r.demand.level == 'HIGH' %}overdue{% elif r.demand.level == 'LOW' %}neutral{% else %}available{% endif %}">{{ r.demand.label }}</span></td>
+          <td>{{ r.current.days }} days ({{ r.current.name }})</td>
+          <td><strong>{{ r.suggested.days }} days ({{ r.suggested.name }})</strong></td>
+          <td style="text-align: right;">
+            <form action="{% url 'apply_tier_suggestion' r.book.id %}" method="POST">{% csrf_token %}<button type="submit" class="btn btn-primary btn-sm">Apply</button></form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header">
     <h2 class="card-title">Book Categories</h2>
     <button type="button" class="btn btn-primary btn-sm" onclick="openModal('add-category-modal')">Add Category</button>
   </div>
   <div class="table-responsive">
     <table class="table">
       <thead>
-        <tr><th>Name</th><th>Description</th><th>Books</th><th style="text-align: right;">Action</th></tr>
+        <tr><th>Name</th><th>Description</th><th>Default tier</th><th>Books</th><th style="text-align: right;">Action</th></tr>
       </thead>
       <tbody>
         {% for c in categories %}
         <tr>
           <td><strong>{{ c.name }}</strong></td>
           <td>{{ c.description|default:"-" }}</td>
+          <td>{% if c.borrowing_tier %}{{ c.borrowing_tier.name }} ({{ c.borrowing_tier.days }}d){% if not c.borrowing_tier.is_active %} <span class="status-badge neutral">inactive</span>{% endif %}{% else %}<span style="color: var(--text-muted);">Library default</span>{% endif %}</td>
           <td>{{ c.book_count }}</td>
           <td style="text-align: right;">
             <div style="display: inline-flex; gap: 0.4rem;">
@@ -66,7 +136,7 @@
           </td>
         </tr>
         {% empty %}
-        <tr><td colspan="4" class="empty-state"><div class="empty-state-title">No categories yet</div><div class="empty-state-text">Add a category before adding books.</div></td></tr>
+        <tr><td colspan="5" class="empty-state"><div class="empty-state-title">No categories yet</div><div class="empty-state-text">Add a category before adding books.</div></td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -85,6 +155,12 @@
       <div class="modal-body">
         <div class="form-group"><label class="form-label">Name *</label><input type="text" name="name" class="form-control" maxlength="100" required></div>
         <div class="form-group"><label class="form-label">Description</label><input type="text" name="description" class="form-control"></div>
+        <div class="form-group"><label class="form-label">Default borrowing tier</label>
+          <select name="borrowing_tier" class="form-control">
+            <option value="">Library default</option>
+            {% for t in active_tiers %}<option value="{{ t.id }}">{{ t.name }} ({{ t.days }} days)</option>{% endfor %}
+          </select>
+        </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('add-category-modal')">Cancel</button>
@@ -107,9 +183,60 @@
       <div class="modal-body">
         <div class="form-group"><label class="form-label">Name *</label><input type="text" name="name" class="form-control" maxlength="100" value="{{ c.name }}" required></div>
         <div class="form-group"><label class="form-label">Description</label><input type="text" name="description" class="form-control" value="{{ c.description|default:'' }}"></div>
+        <div class="form-group"><label class="form-label">Default borrowing tier</label>
+          <select name="borrowing_tier" class="form-control">
+            <option value="">Library default</option>
+            {% if c.borrowing_tier and not c.borrowing_tier.is_active %}<option value="{{ c.borrowing_tier.id }}" selected>{{ c.borrowing_tier }} - inactive</option>{% endif %}
+            {% for t in active_tiers %}<option value="{{ t.id }}" {% if c.borrowing_tier_id == t.id %}selected{% endif %}>{{ t.name }} ({{ t.days }} days)</option>{% endfor %}
+          </select>
+        </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" onclick="closeModal('edit-category-{{ c.id }}')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+<!-- Add tier -->
+<div id="add-tier-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Add Borrowing Tier</h3>
+      <button type="button" onclick="closeModal('add-tier-modal')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">×</button>
+    </div>
+    <form action="{% url 'tier_create' %}" method="POST">
+      {% csrf_token %}
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Name *</label><input type="text" name="name" class="form-control" maxlength="50" placeholder="e.g. Short-term" required></div>
+        <div class="form-group"><label class="form-label">Duration (days) *</label><input type="number" name="days" class="form-control" min="1" max="365" required></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('add-tier-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Tier</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Edit tier (one per row) -->
+{% for t in tiers %}
+<div id="edit-tier-{{ t.id }}" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Edit Borrowing Tier</h3>
+      <button type="button" onclick="closeModal('edit-tier-{{ t.id }}')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">×</button>
+    </div>
+    <form action="{% url 'tier_update' t.id %}" method="POST">
+      {% csrf_token %}
+      <div class="modal-body">
+        <div class="form-group"><label class="form-label">Name *</label><input type="text" name="name" class="form-control" maxlength="50" value="{{ t.name }}" required></div>
+        <div class="form-group"><label class="form-label">Duration (days) *</label><input type="number" name="days" class="form-control" min="1" max="365" value="{{ t.days }}" required></div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">Books already on loan keep their original due dates.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('edit-tier-{{ t.id }}')">Cancel</button>
         <button type="submit" class="btn btn-primary">Save Changes</button>
       </div>
     </form>

@@ -305,7 +305,7 @@ class MembershipTypeTests(TestCase):
 # =====================================================================
 # Admin role: permissions, settings, categories, librarian accounts, reports
 # =====================================================================
-from .models import AuditLog, LibrarySettings
+from .models import AuditLog, BorrowingTier, LibrarySettings
 from .reports import REPORT_TYPES
 
 
@@ -372,22 +372,22 @@ class RoleAccessTests(AdminFeatureBase):
 
 class SystemSettingsTests(AdminFeatureBase):
     def save(self, **kw):
-        data = {'daily_fine_rate': '20.00', 'weekly_borrow_limit': '5', 'borrow_period_days': '14'}
+        data = {'daily_fine_rate': '20.00', 'weekly_borrow_limit': '5', 'max_renewals': '1'}
         data.update({k: str(v) for k, v in kw.items()})
         return self.ca.post('/management/settings/', data)
 
     def test_invalid_values_rejected(self):
         for bad in [{'daily_fine_rate': '-5'}, {'weekly_borrow_limit': '0'}, {'weekly_borrow_limit': '-1'},
-                    {'borrow_period_days': '0'}, {'borrow_period_days': '9999'}, {'daily_fine_rate': 'abc'}]:
+                    {'max_renewals': '-1'}, {'max_renewals': '9'}, {'daily_fine_rate': 'abc'}]:
             r = self.save(**bad)
             self.assertEqual(r.status_code, 200, bad)  # re-rendered with errors, not saved
         s = LibrarySettings.get()
-        self.assertEqual((s.daily_fine_rate, s.weekly_borrow_limit, s.borrow_period_days), (Decimal('20.00'), 5, 14))
+        self.assertEqual((s.daily_fine_rate, s.weekly_borrow_limit, s.max_renewals), (Decimal('20.00'), 5, 1))
 
     def test_valid_update_is_saved_and_audited(self):
-        self.save(daily_fine_rate='35.50', weekly_borrow_limit=3, borrow_period_days=10)
+        self.save(daily_fine_rate='35.50', weekly_borrow_limit=3, max_renewals=2)
         s = LibrarySettings.get()
-        self.assertEqual((s.daily_fine_rate, s.weekly_borrow_limit, s.borrow_period_days), (Decimal('35.50'), 3, 10))
+        self.assertEqual((s.daily_fine_rate, s.weekly_borrow_limit, s.max_renewals), (Decimal('35.50'), 3, 2))
         log = AuditLog.objects.filter(action='UPDATE_SETTINGS').get()
         self.assertEqual(log.user, self.admin)
         self.assertIn('20.00 -> 35.50', log.details)
@@ -396,7 +396,7 @@ class SystemSettingsTests(AdminFeatureBase):
         self.ca.post('/transactions/borrow/', {'member_id': self.member.id, 'book_id': self.book.id})
         old = BorrowTransaction.objects.get()
         self.assertEqual(old.due_date - old.issue_date, timedelta(days=14))
-        self.save(borrow_period_days=10)
+        self.ca.post(f'/management/settings/tiers/{BorrowingTier.get_default().id}/edit/', {'name': 'Standard', 'days': 10})
         self.ca.post('/transactions/borrow/', {'member_id': self.member.id, 'book_id': self.book.id})
         new = BorrowTransaction.objects.exclude(pk=old.pk).get()
         old.refresh_from_db()
@@ -404,7 +404,7 @@ class SystemSettingsTests(AdminFeatureBase):
         self.assertEqual(old.due_date - old.issue_date, timedelta(days=14))  # untouched
 
     def test_pickup_due_date_uses_configured_duration(self):
-        self.save(borrow_period_days=9)
+        self.ca.post(f'/management/settings/tiers/{BorrowingTier.get_default().id}/edit/', {'name': 'Standard', 'days': 9})
         req = approve_request(submit_borrow_request(self.member, self.book).id, self.admin)
         txn = confirm_pickup(req.id, self.admin)
         self.assertEqual(txn.due_date, timezone.localdate() + timedelta(days=9))
@@ -437,10 +437,11 @@ class SystemSettingsTests(AdminFeatureBase):
         self.assertEqual(BorrowTransaction.objects.count(), 3)
 
     def test_rules_shown_in_pages_instead_of_hardcoded(self):
-        self.save(daily_fine_rate='42.00', borrow_period_days=21)
+        self.save(daily_fine_rate='42.00')
+        self.ca.post(f'/management/settings/tiers/{BorrowingTier.get_default().id}/edit/', {'name': 'Standard', 'days': 21})
         page = self.ca.get('/transactions/').content.decode()
         self.assertIn('42.00', page)
-        self.assertIn('21 Days', page)
+        self.assertIn('data-days="21"', page)
 
 
 class CategoryTests(AdminFeatureBase):
@@ -556,3 +557,321 @@ class ReportTests(AdminFeatureBase):
         self.ca.post(f'/transactions/{txn.id}/pay-fine/', {'amount': '30.00', 'payment_method': 'CASH'})
         s = self.ca.get('/reports/').context['stats']
         self.assertEqual((s['fines_collected'], s['fines_outstanding']), (Decimal('30.00'), Decimal('70.00')))
+
+
+# =====================================================================
+# Borrowing tiers, demand suggestions and renewals
+# =====================================================================
+from .demand import demand_for_books, suggest_tier, tier_suggestions
+from .services import place_reservation, renew_loan, renewal_block_reason
+
+
+class BorrowingTierTests(AdminFeatureBase):
+    def tier(self, name):
+        return BorrowingTier.objects.get(name=name)
+
+    def borrow(self, book=None, member=None):
+        self.ca.post('/transactions/borrow/', {'member_id': (member or self.member).id, 'book_id': (book or self.book).id})
+        return BorrowTransaction.objects.latest('id')
+
+    # ---- defaults and resolution order
+    def test_default_tiers_exist(self):
+        self.assertEqual(
+            list(BorrowingTier.objects.values_list('name', 'days', 'is_default').order_by('days')),
+            [('Short-term', 7, False), ('Standard', 14, True), ('Extended', 30, False)],
+        )
+
+    def test_book_tier_beats_category_tier_beats_default(self):
+        self.assertEqual(self.book.resolve_loan_terms().days, 14)
+        self.assertEqual(self.book.resolve_loan_terms().source, 'default')
+        self.cat.borrowing_tier = self.tier('Extended'); self.cat.save()
+        self.book.refresh_from_db()
+        t = self.book.resolve_loan_terms()
+        self.assertEqual((t.days, t.source), (30, 'category'))
+        self.book.borrowing_tier = self.tier('Short-term'); self.book.save()
+        t = self.book.resolve_loan_terms()
+        self.assertEqual((t.days, t.source), (7, 'book'))
+
+    def test_inactive_tier_is_skipped(self):
+        self.book.borrowing_tier = self.tier('Short-term'); self.book.save()
+        self.ca.post(f"/management/settings/tiers/{self.tier('Short-term').id}/toggle/")
+        self.book.refresh_from_db()
+        self.assertEqual(self.book.resolve_loan_terms().days, 14)
+
+    # ---- due dates
+    def test_desk_checkout_uses_book_tier_and_stores_snapshot(self):
+        self.book.borrowing_tier = self.tier('Short-term'); self.book.save()
+        txn = self.borrow()
+        self.assertEqual(txn.due_date, timezone.localdate() + timedelta(days=7))
+        self.assertEqual((txn.loan_days, txn.tier_name), (7, 'Short-term'))
+
+    def test_loan_period_starts_at_pickup_not_approval(self):
+        self.cat.borrowing_tier = self.tier('Extended'); self.cat.save()
+        req = approve_request(submit_borrow_request(self.member, self.book).id, self.admin)
+        self.assertEqual(BorrowTransaction.objects.count(), 0)  # approval alone starts no loan
+        txn = confirm_pickup(req.id, self.admin)
+        self.assertEqual(txn.due_date, timezone.localdate() + timedelta(days=30))
+        self.assertEqual(txn.tier_name, 'Extended')
+
+    def test_editing_a_tier_never_changes_existing_loans(self):
+        old = self.borrow()
+        self.ca.post(f"/management/settings/tiers/{self.tier('Standard').id}/edit/", {'name': 'Standard', 'days': 3})
+        old.refresh_from_db()
+        self.assertEqual((old.due_date - old.issue_date).days, 14)
+        self.assertEqual(old.loan_days, 14)
+        self.assertEqual((self.borrow().due_date - timezone.localdate()).days, 3)
+
+    # ---- admin management
+    def test_admin_can_add_edit_deactivate_and_set_default(self):
+        self.ca.post('/management/settings/tiers/new/', {'name': 'Overnight', 'days': 1})
+        t = self.tier('Overnight')
+        self.assertEqual(t.days, 1)
+        self.ca.post(f'/management/settings/tiers/{t.id}/edit/', {'name': 'One day', 'days': 2})
+        t.refresh_from_db()
+        self.assertEqual((t.name, t.days), ('One day', 2))
+        self.ca.post(f'/management/settings/tiers/{t.id}/toggle/')
+        t.refresh_from_db()
+        self.assertFalse(t.is_active)
+        self.ca.post(f'/management/settings/tiers/{t.id}/make-default/')  # inactive: refused
+        t.refresh_from_db()
+        self.assertFalse(t.is_default)
+        self.ca.post(f"/management/settings/tiers/{self.tier('Extended').id}/make-default/")
+        self.assertEqual(BorrowingTier.get_default().name, 'Extended')
+        self.assertEqual(BorrowingTier.objects.filter(is_default=True).count(), 1)
+        self.assertTrue(AuditLog.objects.filter(action='CREATE_TIER').exists())
+
+    def test_invalid_tiers_rejected(self):
+        before = BorrowingTier.objects.count()
+        for bad in [{'name': '', 'days': 5}, {'name': 'X', 'days': 0}, {'name': 'X', 'days': 366},
+                    {'name': 'X', 'days': 'abc'}, {'name': 'standard', 'days': 5}]:
+            self.ca.post('/management/settings/tiers/new/', bad)
+        self.assertEqual(BorrowingTier.objects.count(), before)
+
+    def test_default_tier_cannot_be_deactivated(self):
+        std = self.tier('Standard')
+        self.ca.post(f'/management/settings/tiers/{std.id}/toggle/')
+        std.refresh_from_db()
+        self.assertTrue(std.is_active)
+
+    def test_only_admin_manages_tiers(self):
+        std = self.tier('Standard')
+        urls = ['/management/settings/tiers/new/', f'/management/settings/tiers/{std.id}/edit/',
+                f'/management/settings/tiers/{std.id}/toggle/', f'/management/settings/tiers/{std.id}/make-default/',
+                f'/management/settings/books/{self.book.id}/apply-tier/']
+        for url in urls:
+            self.assertEqual(self.cl.post(url, {'name': 'x', 'days': 5}).status_code, 403, url)
+            self.assertEqual(self.cm.post(url, {'name': 'x', 'days': 5}).status_code, 403, url)
+
+    # ---- assignment
+    def test_category_tier_assignment(self):
+        ext = self.tier('Extended')
+        self.ca.post('/management/settings/categories/new/', {'name': 'Reference', 'borrowing_tier': ext.id})
+        self.assertEqual(Category.objects.get(name='Reference').borrowing_tier, ext)
+        self.ca.post(f'/management/settings/categories/{self.cat.id}/edit/',
+                     {'name': 'General', 'borrowing_tier': self.tier('Short-term').id})
+        self.cat.refresh_from_db()
+        self.assertEqual(self.cat.borrowing_tier.name, 'Short-term')
+        self.ca.post(f'/management/settings/categories/{self.cat.id}/edit/', {'name': 'General', 'borrowing_tier': ''})
+        self.cat.refresh_from_db()
+        self.assertIsNone(self.cat.borrowing_tier)
+
+    def edit_book(self, client, **extra):
+        data = {'title': 'Book A', 'author': 'Au', 'isbn': '7001', 'category': self.cat.id, 'shelf_number': 'A1',
+                'status': 'AVAILABLE', 'description': ''}
+        data.update(extra)
+        return client.post(f'/books/{self.book.id}/edit/', data)
+
+    def test_admin_assigns_book_tier_but_librarian_cannot(self):
+        self.edit_book(self.cl, borrowing_tier=self.tier('Short-term').id)
+        self.book.refresh_from_db()
+        self.assertIsNone(self.book.borrowing_tier)
+        self.edit_book(self.ca, borrowing_tier=self.tier('Short-term').id)
+        self.book.refresh_from_db()
+        self.assertEqual(self.book.borrowing_tier.name, 'Short-term')
+        self.edit_book(self.cl)  # a librarian saving other changes leaves the tier alone
+        self.book.refresh_from_db()
+        self.assertEqual(self.book.borrowing_tier.name, 'Short-term')
+        self.edit_book(self.ca, borrowing_tier='')
+        self.book.refresh_from_db()
+        self.assertIsNone(self.book.borrowing_tier)
+
+    def test_saving_a_book_keeps_its_deactivated_tier(self):
+        self.book.borrowing_tier = self.tier('Extended'); self.book.save()
+        self.ca.post(f"/management/settings/tiers/{self.tier('Extended').id}/toggle/")
+        self.edit_book(self.ca, borrowing_tier=self.tier('Extended').id)
+        self.book.refresh_from_db()
+        self.assertEqual(self.book.borrowing_tier.name, 'Extended')
+
+    def test_book_pages_show_loan_period(self):
+        self.book.borrowing_tier = self.tier('Short-term'); self.book.save()
+        self.assertIn('7 days (Short-term)', self.cm.get(f'/books/{self.book.id}/').content.decode())
+        self.assertEqual(self.ca.get(f'/books/{self.book.id}/edit/').status_code, 200)
+        self.assertEqual(self.cl.get(f'/books/{self.book.id}/edit/').status_code, 200)
+
+
+class RenewalTests(AdminFeatureBase):
+    def setUp(self):
+        super().setUp()
+        self.txn = self.borrow()
+
+    def borrow(self, book=None, member=None):
+        self.ca.post('/transactions/borrow/', {'member_id': (member or self.member).id, 'book_id': (book or self.book).id})
+        return BorrowTransaction.objects.latest('id')
+
+    def other_member(self):
+        u = User.objects.create_user('other', password='Str0ng-pass-4')
+        UserProfile.objects.create(user=u, role='MEMBER')
+        return Member.objects.create(user=u, member_id='MEM-2026-7002', first_name='Oth', last_name='Er',
+                                     email='o@example.com', phone='0901')
+
+    def test_member_renews_once_for_the_same_duration(self):
+        due = self.txn.due_date
+        self.cm.post(f'/transactions/{self.txn.id}/renew/')
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.due_date, due + timedelta(days=14))
+        self.assertEqual(self.txn.renewal_count, 1)
+        self.cm.post(f'/transactions/{self.txn.id}/renew/')  # second renewal is refused
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.due_date, due + timedelta(days=14))
+        self.assertTrue(Notification.objects.filter(recipient=self.mem_user, title__startswith='Loan Renewed').exists())
+
+    def test_renewal_uses_the_loans_own_length_even_if_tier_changed(self):
+        due = self.txn.due_date
+        std = BorrowingTier.objects.get(name='Standard'); std.days = 3; std.save()
+        renew_loan(self.txn.id)
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.due_date, due + timedelta(days=14))
+
+    def test_admin_can_allow_more_renewals_or_turn_them_off(self):
+        s = LibrarySettings.get(); s.max_renewals = 2; s.save()
+        renew_loan(self.txn.id); renew_loan(self.txn.id)
+        with self.assertRaises(HoldError):
+            renew_loan(self.txn.id)
+        s.max_renewals = 0; s.save()
+        self.assertIn('turned off', renewal_block_reason(BorrowTransaction.objects.get(pk=self.txn.pk)))
+
+    def test_overdue_loan_cannot_be_renewed(self):
+        today = timezone.localdate()
+        BorrowTransaction.objects.filter(pk=self.txn.pk).update(due_date=today - timedelta(days=1), status='OVERDUE')
+        with self.assertRaises(HoldError):
+            renew_loan(self.txn.id)
+
+    def test_reserved_book_cannot_be_renewed(self):
+        single = Book.objects.create(title='One copy', author='A', isbn='7777', category=self.cat,
+                                     shelf_number='B', total_copies=1, available_copies=1)
+        txn = self.borrow(book=single)
+        place_reservation(self.other_member(), single)
+        with self.assertRaises(HoldError) as ctx:
+            renew_loan(txn.id)
+        self.assertIn('reserved', str(ctx.exception))
+
+    def test_member_with_unpaid_fines_or_inactive_cannot_renew(self):
+        self.member.balance = Decimal('20.00'); self.member.save()
+        with self.assertRaises(HoldError):
+            renew_loan(self.txn.id)
+        self.member.balance = Decimal('0.00'); self.member.status = 'SUSPENDED'; self.member.save()
+        with self.assertRaises(HoldError):
+            renew_loan(self.txn.id)
+
+    def test_members_cannot_renew_other_peoples_loans_and_anonymous_is_redirected(self):
+        other = self.other_member()
+        c = self.login(other.user)
+        c.post(f'/transactions/{self.txn.id}/renew/')
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.renewal_count, 0)
+        self.assertEqual(Client().post(f'/transactions/{self.txn.id}/renew/').status_code, 302)
+        self.assertEqual(self.cm.get(f'/transactions/{self.txn.id}/renew/').status_code, 405)
+
+    def test_staff_can_renew_on_behalf_of_member(self):
+        self.cl.post(f'/transactions/{self.txn.id}/renew/')
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.renewal_count, 1)
+        self.assertTrue(AuditLog.objects.filter(action='RENEW_LOAN').exists())
+
+    def test_member_dashboard_shows_renew_button_then_reason(self):
+        self.assertIn(f'/transactions/{self.txn.id}/renew/', self.cm.get('/').content.decode())
+        renew_loan(self.txn.id)
+        self.assertIn('Already renewed once', self.cm.get('/').content.decode())
+
+
+class DemandAndSuggestionTests(AdminFeatureBase):
+    def setUp(self):
+        super().setUp()
+        self.one = Book.objects.create(title='Popular', author='A', isbn='8001', category=self.cat,
+                                       shelf_number='P', total_copies=1, available_copies=1)
+
+    def age(self, book, days=100):
+        Book.objects.filter(pk=book.pk).update(created_at=timezone.now() - timedelta(days=days))
+        book.refresh_from_db()
+        return book
+
+    def demand(self, book):
+        return demand_for_books([book])[book.id]
+
+    def test_new_book_with_no_history_is_low_demand_but_flagged_new(self):
+        d = self.demand(self.one)
+        self.assertEqual((d.level, d.is_new), ('LOW', True))
+        self.assertEqual(suggest_tier(d).name, 'Short-term')  # newly acquired -> shortest
+
+    def test_old_unborrowed_book_is_low_demand_and_suggests_longest_tier(self):
+        d = self.demand(self.age(self.one))
+        self.assertEqual((d.level, d.is_new), ('LOW', False))
+        self.assertEqual(suggest_tier(d).name, 'Extended')
+
+    def test_reservation_queue_makes_a_book_high_demand(self):
+        self.age(self.one)
+        m2 = Member.objects.create(member_id='MEM-2026-8002', first_name='B', last_name='C', email='b@example.com', phone='1')
+        self.ca.post('/transactions/borrow/', {'member_id': self.member.id, 'book_id': self.one.id})
+        place_reservation(m2, self.one)
+        d = self.demand(self.one)
+        self.assertEqual(d.level, 'HIGH')
+        self.assertEqual(suggest_tier(d).name, 'Short-term')
+
+    def test_many_recent_loans_per_copy_is_high_demand(self):
+        self.age(self.one)
+        today = timezone.localdate()
+        for i in range(4):
+            BorrowTransaction.objects.create(
+                transaction_code=f'TXN-D-{i}', member=self.member, book=self.one, issued_by=self.admin,
+                issue_date=today - timedelta(days=10 + i), due_date=today - timedelta(days=i), status='RETURNED',
+                return_date=today - timedelta(days=i))
+        self.assertEqual(self.demand(self.one).level, 'HIGH')
+
+    def test_old_loans_outside_the_window_do_not_count(self):
+        self.age(self.one)
+        today = timezone.localdate()
+        for i in range(5):
+            BorrowTransaction.objects.create(
+                transaction_code=f'TXN-O-{i}', member=self.member, book=self.one, issued_by=self.admin,
+                issue_date=today - timedelta(days=200), due_date=today - timedelta(days=186), status='RETURNED',
+                return_date=today - timedelta(days=190))
+        self.assertEqual(self.demand(self.one).level, 'LOW')
+
+    def test_demand_lookup_uses_a_fixed_number_of_queries(self):
+        books = [self.age(Book.objects.create(title=f'B{i}', author='A', isbn=f'90{i}', category=self.cat,
+                                              shelf_number='X', total_copies=1, available_copies=1)) for i in range(8)]
+        with self.assertNumQueries(3):
+            demand_for_books(books)
+
+    def test_suggestions_list_and_apply(self):
+        self.age(self.book); self.age(self.one)
+        rows = tier_suggestions()
+        self.assertEqual({r['book'].id for r in rows}, {self.book.id, self.one.id})  # low demand: 14 -> 30
+        self.assertIn('Suggested Tier Changes', self.ca.get('/management/settings/').content.decode())
+        self.ca.post(f'/management/settings/books/{self.one.id}/apply-tier/')
+        self.one.refresh_from_db()
+        self.assertEqual(self.one.resolve_loan_terms().days, 30)
+        self.assertNotIn(self.one.id, {r['book'].id for r in tier_suggestions()})
+        self.assertTrue(AuditLog.objects.filter(action='UPDATE_BOOK', details__contains='suggested').exists())
+
+    def test_no_suggestions_with_fewer_than_two_active_tiers(self):
+        BorrowingTier.objects.exclude(is_default=True).update(is_active=False)
+        self.assertEqual(tier_suggestions(), [])
+
+    def test_high_demand_badge_on_catalog(self):
+        self.age(self.one)
+        self.ca.post('/transactions/borrow/', {'member_id': self.member.id, 'book_id': self.one.id})
+        m2 = Member.objects.create(member_id='MEM-2026-8003', first_name='B', last_name='C', email='c@example.com', phone='1')
+        place_reservation(m2, self.one)
+        self.assertIn('High demand', self.cm.get('/books/').content.decode())
+
