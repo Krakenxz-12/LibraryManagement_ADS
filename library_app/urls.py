@@ -53,8 +53,8 @@ urlpatterns = [
     path('reports/', views.reports_dashboard_view, name='reports_dashboard'),
     path('reports/export/', views.export_report_view, name='export_report'),
 
-    # Module 7 & 10: Users, Backups & Security
-    path('management/users/', views.user_management_view, name='user_management'),
+    # Admin: database backups and data protection
+    path('management/backup/', views.backup_management_view, name='backup_management'),
 
     # Admin: system settings, categories, librarian accounts
     path('management/settings/', views.system_settings_view, name='system_settings'),

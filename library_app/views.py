@@ -1399,42 +1399,13 @@ def librarian_reset_password_view(request, user_id):
 
 
 # ==========================================
-# MODULE 7 & 10: USER MANAGEMENT, BACKUP & SECURITY
+# ADMIN: DATABASE BACKUPS & DATA PROTECTION
 # ==========================================
 
 @login_required
 @admin_required
-def user_management_view(request):
-    users = User.objects.select_related('profile').all().order_by('-date_joined')
-    audit_logs = AuditLog.objects.select_related('user').all()[:25]
-
-    if request.method == 'POST':
-        action = request.POST.get('action')
-        if action == 'create_staff':
-            username = request.POST.get('username', '').strip()
-            password = request.POST.get('password', '')
-            role = request.POST.get('role', 'LIBRARIAN')
-            email = request.POST.get('email', '').strip()
-            first_name = request.POST.get('first_name', '').strip()
-            last_name = request.POST.get('last_name', '').strip()
-
-            if User.objects.filter(username=username).exists():
-                messages.error(request, f"Username '{username}' already exists.")
-            else:
-                user = User.objects.create_user(
-                    username=username, email=email, password=password,
-                    first_name=first_name, last_name=last_name
-                )
-                UserProfile.objects.create(user=user, role=role)
-                log_audit(request, 'CREATE_STAFF_USER', 'User', user.id, f"Created staff user {username} ({role})")
-                messages.success(request, f"User '{username}' created with role: {role}")
-                return redirect('user_management')
-
-    context = {
-        'users': users,
-        'audit_logs': audit_logs,
-    }
-    return render(request, 'library_app/user_management.html', context)
+def backup_management_view(request):
+    return render(request, 'library_app/backup_management.html')
 
 
 @login_required
@@ -1460,7 +1431,7 @@ def backup_restore_view(request):
             messages.success(request, f"Successfully restored {count} records from backup file.")
         except Exception as e:
             messages.error(request, f"Error restoring backup: {str(e)}")
-    return redirect('user_management')
+    return redirect('backup_management')
 
 
 # ==========================================
