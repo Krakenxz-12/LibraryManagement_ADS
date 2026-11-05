@@ -13,8 +13,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import (
-    ACTIVE_LOAN_STATUSES, Book, BorrowRequest, BorrowTransaction, LibrarySettings, Notification, Reservation,
+    ACTIVE_LOAN_STATUSES, Book, BorrowRequest, BorrowTransaction, BorrowingTier, LibrarySettings, Notification, Reservation,
 )
+from .demand import demand_for_books, suggest_tier
 
 BLOCKED_BOOK_STATUSES = ('LOST', 'UNDER_REPAIR')
 
@@ -63,19 +64,27 @@ def _notify_staff(title, message):
 
 
 # ---------------------------------------------------------------- stock helpers
-def _create_loan(member, book, user, days=None):
-    """Start a loan NOW (the moment the librarian hands the book over). The period comes from the
-    book's borrowing tier, and the day count and tier name are stored on the loan so later edits to
-    the tier never change it."""
+def _create_loan(member, book, user, days=None, tier=None):
+    """Start a borrow NOW and store the suggested duration on the transaction.
+
+    The suggestion is recalculated at checkout so the saved due date matches the
+    current demand. Explicit days remain supported for existing service callers.
+    """
     rules = LibrarySettings.get()
-    terms = book.resolve_loan_terms()
-    days = days or terms.days
+    demand = demand_for_books([book])[book.id]
+    active_tiers = list(BorrowingTier.objects.filter(is_active=True).order_by('days', 'id'))
+    suggested = suggest_tier(demand, active_tiers)
+    terms = tier or suggested or book.resolve_loan_terms()
+    if tier is not None:
+        days = tier.days
+    elif days is None:
+        days = terms.days
     issue_date = timezone.localdate()
     return BorrowTransaction.objects.create(
         transaction_code=BorrowTransaction.generate_transaction_code(),
         member=member, book=book, issued_by=user,
         issue_date=issue_date, due_date=issue_date + timedelta(days=days),
-        loan_days=days, tier_name=terms.name,
+        loan_days=days, tier_name=(terms.name if tier is not None or days == terms.days else (next((item.name for item in active_tiers if item.days == days), None) or f'{days}-day requested')),
         daily_fine_rate=rules.daily_fine_rate,
         status='BORROWED',
     )
@@ -115,7 +124,7 @@ def promote_reservations(book):
             res.member.user, f"Reserved Book Ready: '{book.title}'",
             f"'{book.title}' is being held for you at shelf #{book.shelf_number}. "
             f"Please collect it from the librarian before {_fmt(res.pickup_deadline)}, or the hold expires. "
-            f"Your {book.resolve_loan_terms().days}-day loan starts when you collect it.",
+            f"Your borrowing period will be determined by the librarian when you collect it.",
             'RESERVATION_READY',
         )
         promoted.append(res)
@@ -144,7 +153,15 @@ def submit_borrow_request(member, book):
             raise HoldError("You already have an open request for this book.")
         if BorrowTransaction.objects.filter(member=member, book=book, status__in=ACTIVE_LOAN_STATUSES).exists():
             raise HoldError("You are currently borrowing this book.")
-        req = BorrowRequest.objects.create(member=member, book=book)
+        demand = demand_for_books([book])[book.id]
+        active_tiers = list(BorrowingTier.objects.filter(is_active=True).order_by('days', 'id'))
+        suggested = suggest_tier(demand, active_tiers)
+        # The suggested tier is only a starting point for the librarian's decision.
+        initial_tier = suggested or book.resolve_loan_terms().tier
+        req = BorrowRequest.objects.create(
+            member=member, book=book,
+            requested_days=(initial_tier.days if initial_tier else book.resolve_loan_terms().days),
+        )
     _notify_staff(
         f"New Borrow Request: '{book.title}'",
         f"{member.full_name} ({member.member_id}) requested to borrow '{book.title}'. Review it under Borrow Requests.",
@@ -152,7 +169,7 @@ def submit_borrow_request(member, book):
     return req
 
 
-def approve_request(request_id, user):
+def approve_request(request_id, user, tier_id=None):
     """Librarian approves: the copy is held and the member has PICKUP_HOLD_HOURS to collect it."""
     with transaction.atomic():
         req = BorrowRequest.objects.select_for_update().select_related('member__user').get(pk=request_id)
@@ -165,6 +182,11 @@ def approve_request(request_id, user):
             raise HoldError(f"'{book.title}' is marked {book.get_status_display()}.")
         if book.available_copies <= 0:
             raise HoldError("No free copy left to hold. Reject this request and let the member reserve instead.")
+        selected_tier = BorrowingTier.objects.filter(pk=tier_id, is_active=True).first() if tier_id else None
+        if selected_tier is None:
+            raise HoldError("Choose an active borrowing tier before approving this request.")
+        req.borrowing_tier = selected_tier
+        req.requested_days = selected_tier.days
         now = timezone.now()
         book.available_copies -= 1
         req.status = 'APPROVED'
@@ -177,7 +199,7 @@ def approve_request(request_id, user):
         req.member.user, f"Request Approved: '{book.title}'",
         f"Your request was approved. Collect '{book.title}' (shelf #{book.shelf_number}) from the librarian "
         f"before {_fmt(req.pickup_deadline)}, or it will be released. "
-        f"Your {book.resolve_loan_terms().days}-day loan starts when you collect it.",
+        f"The librarian assigned the {req.borrowing_tier.name} tier ({req.requested_days} days). Your borrowing period starts when you collect it.",
     )
     return req
 
@@ -223,7 +245,7 @@ def confirm_pickup(request_id, user, days=None):
         if req.pickup_deadline and req.pickup_deadline < timezone.now():
             raise HoldError("The pickup window has passed. The hold will be released automatically.")
         _check_can_collect(req.member, book)
-        txn = _create_loan(req.member, book, user, days)
+        txn = _create_loan(req.member, book, user, req.requested_days if days is None else days, tier=req.borrowing_tier)
         req.status = 'COLLECTED'
         req.collected_at = timezone.now()
         req.transaction = txn
@@ -284,10 +306,15 @@ def confirm_reservation_pickup(reservation_id, user, days=None):
 
 
 # ---------------------------------------------------------------- direct desk checkout
-def checkout_at_desk(member, book_id, user, days=None):
+def checkout_at_desk(member, book_id, user, days=None, tier_id=None):
     """Walk-in checkout by a librarian. Uses the member's own hold if they have one."""
     with transaction.atomic():
         book = Book.objects.select_for_update().get(pk=book_id)
+        selected_tier = None
+        if tier_id:
+            selected_tier = BorrowingTier.objects.filter(pk=tier_id, is_active=True).first()
+            if selected_tier is None:
+                raise HoldError("Please select a valid active borrowing tier.")
         _check_can_collect(member, book)
         hold_req = BorrowRequest.objects.select_for_update().filter(member=member, book=book, status='APPROVED').first()
         hold_res = Reservation.objects.select_for_update().filter(member=member, book=book, status='READY').first()
@@ -295,7 +322,7 @@ def checkout_at_desk(member, book_id, user, days=None):
             if book.available_copies <= 0:
                 raise HoldError(f"Book '{book.title}' currently has no copies available for checkout.")
             book.available_copies -= 1
-        txn = _create_loan(member, book, user, days)
+        txn = _create_loan(member, book, user, days, tier=selected_tier)
         if hold_req:
             hold_req.status, hold_req.collected_at, hold_req.transaction = 'COLLECTED', timezone.now(), txn
             hold_req.save()

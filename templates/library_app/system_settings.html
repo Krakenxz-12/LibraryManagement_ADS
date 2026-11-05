@@ -79,35 +79,6 @@
   </div>
 </div>
 
-{% if suggestions %}
-<div class="card">
-  <div class="card-header"><h2 class="card-title">Suggested Tier Changes</h2></div>
-  <div class="card-body" style="padding-bottom: 0; font-size: 0.8rem; color: var(--text-muted);">
-    Based on borrowing in the last 90 days, how many people are waiting, and whether the book is newly acquired. Suggestions change nothing until you apply them.
-  </div>
-  <div class="table-responsive">
-    <table class="table">
-      <thead>
-        <tr><th>Book</th><th>Demand</th><th>Now</th><th>Suggested</th><th style="text-align: right;">Action</th></tr>
-      </thead>
-      <tbody>
-        {% for r in suggestions %}
-        <tr>
-          <td><a href="{% url 'book_detail' r.book.id %}"><strong>{{ r.book.title }}</strong></a><div style="font-size: 0.75rem; color: var(--text-muted);">{{ r.demand.reason }}{% if r.demand.is_new %} &bull; newly acquired{% endif %}</div></td>
-          <td><span class="status-badge {% if r.demand.level == 'HIGH' %}overdue{% elif r.demand.level == 'LOW' %}neutral{% else %}available{% endif %}">{{ r.demand.label }}</span></td>
-          <td>{{ r.current.days }} days ({{ r.current.name }})</td>
-          <td><strong>{{ r.suggested.days }} days ({{ r.suggested.name }})</strong></td>
-          <td style="text-align: right;">
-            <form action="{% url 'apply_tier_suggestion' r.book.id %}" method="POST">{% csrf_token %}<button type="submit" class="btn btn-primary btn-sm">Apply</button></form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endif %}
-
 <div class="card">
   <div class="card-header">
     <h2 class="card-title">Book Categories</h2>

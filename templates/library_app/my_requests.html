@@ -70,7 +70,10 @@
             <a href="{% url 'book_detail' r.book.id %}" style="font-weight: 600; color: var(--text-heading);">{{ r.book.title }}</a><br>
             <span style="font-size: 0.75rem; color: var(--text-muted);">Shelf {{ r.book.shelf_number }}</span>
           </td>
-          <td>{{ r.requested_at|date:"M d, h:i A" }}</td>
+          <td>
+            {{ r.requested_at|date:"M d, h:i A" }}
+            {% if r.borrowing_tier %}<br><span style="font-size: 0.75rem; color: var(--text-muted);">{{ r.borrowing_tier.name }} · {{ r.requested_days }} days</span>{% elif r.status == 'PENDING' %}<br><span style="font-size: 0.75rem; color: var(--text-muted);">Duration assigned by librarian upon approval</span>{% endif %}
+          </td>
           <td>
             {% if r.status == 'PENDING' %}
               <span class="status-badge reserved">Pending approval</span>

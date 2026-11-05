@@ -177,6 +177,19 @@ class BorrowRequestWorkflowTests(TestCase):
         self.assertEqual(self.book.available_copies, 1)
         self.assertTrue(Notification.objects.filter(recipient=self.staff, notification_type='LIBRARIAN_ALERT').exists())
 
+    def test_member_can_request_a_shorter_borrowing_period(self):
+        req = submit_borrow_request(self.m1, self.book, requested_days=7)
+        self.assertEqual(req.requested_days, 7)
+        approve_request(req.id, self.staff)
+        txn = confirm_pickup(req.id, self.staff)
+        self.assertEqual(txn.loan_days, 7)
+        self.assertEqual(txn.due_date, timezone.localdate() + timedelta(days=7))
+
+    def test_member_cannot_request_more_than_the_suggested_maximum(self):
+        with self.assertRaises(HoldError):
+            submit_borrow_request(self.m1, self.book, requested_days=15)
+        self.assertEqual(BorrowRequest.objects.count(), 0)
+
     def test_approve_holds_copy_then_pickup_starts_loan_from_pickup_date(self):
         req = submit_borrow_request(self.m1, self.book)
         approve_request(req.id, self.staff)
@@ -562,7 +575,7 @@ class ReportTests(AdminFeatureBase):
 # =====================================================================
 # Borrowing tiers, demand suggestions and renewals
 # =====================================================================
-from .demand import demand_for_books, suggest_tier, tier_suggestions
+from .demand import demand_for_books, suggest_tier
 from .services import place_reservation, renew_loan, renewal_block_reason
 
 
@@ -811,7 +824,7 @@ class DemandAndSuggestionTests(AdminFeatureBase):
     def test_new_book_with_no_history_is_low_demand_but_flagged_new(self):
         d = self.demand(self.one)
         self.assertEqual((d.level, d.is_new), ('LOW', True))
-        self.assertEqual(suggest_tier(d).name, 'Short-term')  # newly acquired -> shortest
+        self.assertEqual(suggest_tier(d).name, 'Standard')  # newly acquired -> default duration
 
     def test_old_unborrowed_book_is_low_demand_and_suggests_longest_tier(self):
         d = self.demand(self.age(self.one))
@@ -823,6 +836,8 @@ class DemandAndSuggestionTests(AdminFeatureBase):
         m2 = Member.objects.create(member_id='MEM-2026-8002', first_name='B', last_name='C', email='b@example.com', phone='1')
         self.ca.post('/transactions/borrow/', {'member_id': self.member.id, 'book_id': self.one.id})
         place_reservation(m2, self.one)
+        m3 = Member.objects.create(member_id='MEM-2026-8004', first_name='D', last_name='E', email='d@example.com', phone='1')
+        place_reservation(m3, self.one)
         d = self.demand(self.one)
         self.assertEqual(d.level, 'HIGH')
         self.assertEqual(suggest_tier(d).name, 'Short-term')
@@ -853,25 +868,28 @@ class DemandAndSuggestionTests(AdminFeatureBase):
         with self.assertNumQueries(3):
             demand_for_books(books)
 
-    def test_suggestions_list_and_apply(self):
-        self.age(self.book); self.age(self.one)
-        rows = tier_suggestions()
-        self.assertEqual({r['book'].id for r in rows}, {self.book.id, self.one.id})  # low demand: 14 -> 30
-        self.assertIn('Suggested Tier Changes', self.ca.get('/management/settings/').content.decode())
-        self.ca.post(f'/management/settings/books/{self.one.id}/apply-tier/')
-        self.one.refresh_from_db()
-        self.assertEqual(self.one.resolve_loan_terms().days, 30)
-        self.assertNotIn(self.one.id, {r['book'].id for r in tier_suggestions()})
-        self.assertTrue(AuditLog.objects.filter(action='UPDATE_BOOK', details__contains='suggested').exists())
+    def test_suggested_duration_appears_on_librarian_borrow_page_not_admin_settings(self):
+        self.age(self.one)
+        borrow_page = self.ca.get('/transactions/').content.decode()
+        settings_page = self.ca.get('/management/settings/').content.decode()
+        self.assertIn('data-days="30"', borrow_page)
+        self.assertIn('data-demand="Low demand"', borrow_page)
+        self.assertNotIn('Suggested Tier Changes', settings_page)
 
-    def test_no_suggestions_with_fewer_than_two_active_tiers(self):
-        BorrowingTier.objects.exclude(is_default=True).update(is_active=False)
-        self.assertEqual(tier_suggestions(), [])
+    def test_checkout_uses_the_suggested_duration(self):
+        self.age(self.one)
+        response = self.ca.post('/transactions/borrow/', {'member_id': self.member.id, 'book_id': self.one.id})
+        self.assertEqual(response.status_code, 302)
+        txn = BorrowTransaction.objects.filter(book=self.one).latest('id')
+        self.assertEqual(txn.loan_days, 30)
+        self.assertEqual(txn.tier_name, 'Extended')
 
     def test_high_demand_badge_on_catalog(self):
         self.age(self.one)
         self.ca.post('/transactions/borrow/', {'member_id': self.member.id, 'book_id': self.one.id})
         m2 = Member.objects.create(member_id='MEM-2026-8003', first_name='B', last_name='C', email='c@example.com', phone='1')
         place_reservation(m2, self.one)
+        m3 = Member.objects.create(member_id='MEM-2026-8005', first_name='D', last_name='E', email='d2@example.com', phone='1')
+        place_reservation(m3, self.one)
         self.assertIn('High demand', self.cm.get('/books/').content.decode())
 

@@ -28,7 +28,7 @@ from .services import (
     cancel_reservation as cancel_reservation_service, confirm_reservation_pickup, checkout_at_desk,
     renew_loan, renewal_block_reason,
 )
-from .demand import demand_for_books, suggest_tier, tier_suggestions
+from .demand import demand_for_books, suggest_tier, maximum_borrow_days
 from .reports import (
     REPORT_TITLES, REPORT_TYPES, build_report, category_rows, export_excel, export_pdf,
     overview_stats, parse_range, top_books, top_borrowers,
@@ -508,6 +508,7 @@ def book_detail_view(request, book_id):
         'loan_terms': book.resolve_loan_terms(),
         'demand': demand,
         'suggested_tier': suggest_tier(demand),
+        'borrow_duration_max_days': maximum_borrow_days(book),
         'categories': categories,
         'active_borrows': active_borrows,
         'reservations': reservations,
@@ -555,8 +556,11 @@ def transaction_list_view(request):
         Book.objects.filter(available_copies__gt=0, status__in=['AVAILABLE', 'RESERVED'])
         .select_related('borrowing_tier', 'category__borrowing_tier')
     )
+    demand_by_book = demand_for_books(available_books)
+    active_tiers = list(BorrowingTier.objects.filter(is_active=True).order_by('days', 'id'))
     for b in available_books:
-        b.loan_terms = b.resolve_loan_terms()
+        b.demand = demand_by_book[b.id]
+        b.borrow_terms = suggest_tier(b.demand, active_tiers) or b.resolve_loan_terms()
 
     context = {
         'transactions': transactions,
@@ -564,6 +568,7 @@ def transaction_list_view(request):
         'query': query,
         'members': members,
         'available_books': available_books,
+        'active_tiers': active_tiers,
     }
     return render(request, 'library_app/transaction_list.html', context)
 
@@ -576,7 +581,7 @@ def borrow_create_view(request):
         member = get_object_or_404(Member, id=request.POST.get('member_id'))
         book = get_object_or_404(Book, id=request.POST.get('book_id'))
         try:
-            txn = checkout_at_desk(member, book.id, request.user)  # loan length comes from the book's borrowing tier
+            txn = checkout_at_desk(member, book.id, request.user, tier_id=request.POST.get('tier_id'))
         except HoldError as e:
             messages.error(request, str(e))
             return redirect('transaction_list')
@@ -772,12 +777,17 @@ def request_borrow_view(request, book_id):
 def borrow_request_list_view(request):
     expire_stale_holds()
     pending = list(BorrowRequest.objects.filter(status='PENDING').select_related('member', 'book').order_by('requested_at'))
+    active_tiers = list(BorrowingTier.objects.filter(is_active=True).order_by('days', 'name'))
     for r in pending:
         r.allowance = weekly_allowance(r.member)
+        r.tiers = active_tiers
+        demand = demand_for_books([r.book])[r.book_id]
+        r.suggested_tier = suggest_tier(demand, active_tiers) or r.book.resolve_loan_terms().tier
     awaiting = list(BorrowRequest.objects.filter(status='APPROVED').select_related('member', 'book').order_by('pickup_deadline'))
     ready_reservations = list(Reservation.objects.filter(status='READY').select_related('member', 'book').order_by('pickup_deadline'))
     context = {
         'pending': pending,
+        'active_tiers': active_tiers,
         'awaiting': awaiting,
         'ready_reservations': ready_reservations,
         'on_hold_total': len(awaiting) + len(ready_reservations),
@@ -794,12 +804,12 @@ def request_approve_view(request, request_id):
     expire_stale_holds()
     req = get_object_or_404(BorrowRequest, id=request_id)
     try:
-        approve_request(req.id, request.user)
+        approve_request(req.id, request.user, request.POST.get('borrowing_tier'))
     except HoldError as e:
         messages.error(request, str(e))
         return redirect('borrow_request_list')
-    log_audit(request, 'APPROVE_REQUEST', 'BorrowRequest', req.id, f"Approved '{req.book.title}' for {req.member.full_name}")
-    messages.success(request, f"Approved. '{req.book.title}' is held for {req.member.full_name} for {settings.PICKUP_HOLD_HOURS} hours.")
+    log_audit(request, 'APPROVE_REQUEST', 'BorrowRequest', req.id, f"Approved '{req.book.title}' for {req.member.full_name} using {req.borrowing_tier.name} ({req.requested_days} days)")
+    messages.success(request, f"Approved with {req.borrowing_tier.name} ({req.requested_days} days). '{req.book.title}' is held for {req.member.full_name} for {settings.PICKUP_HOLD_HOURS} hours.")
     return redirect('borrow_request_list')
 
 
@@ -1098,7 +1108,6 @@ def system_settings_view(request):
             book_count=Count('books', distinct=True), category_count=Count('categories', distinct=True),
         ).order_by('-is_active', 'days', 'name'),
         'active_tiers': BorrowingTier.objects.filter(is_active=True),
-        'suggestions': tier_suggestions()[:25],
     })
 
 
@@ -1265,24 +1274,6 @@ def tier_make_default_view(request, tier_id):
             tier.save(update_fields=['is_default'])
         log_audit(request, 'DEFAULT_TIER', 'BorrowingTier', tier.id, f"Library default borrowing tier is now '{tier.name}' ({tier.days} days)")
         messages.success(request, f"'{tier.name}' is now the library default.")
-    return redirect('system_settings')
-
-
-@login_required
-@admin_required
-@require_POST
-def apply_tier_suggestion_view(request, book_id):
-    """Apply the system's suggested tier to one book (recomputed now, never taken from the form)."""
-    book = get_object_or_404(Book.objects.select_related('category__borrowing_tier', 'borrowing_tier'), id=book_id)
-    tier = suggest_tier(demand_for_books([book])[book.id])
-    if not tier:
-        messages.error(request, "There is no active borrowing tier to suggest.")
-    else:
-        old = book.resolve_loan_terms()
-        book.borrowing_tier = tier
-        book.save(update_fields=['borrowing_tier', 'updated_at'])
-        log_audit(request, 'UPDATE_BOOK', 'Book', book.id, f"Applied suggested borrowing tier to '{book.title}': {old.name} -> {tier.name}")
-        messages.success(request, f"'{book.title}' now uses the {tier.name} tier ({tier.days} days).")
     return redirect('system_settings')
 
 

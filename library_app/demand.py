@@ -4,7 +4,7 @@ Demand is worked out from two signals:
   * how often the book was borrowed recently (loans in the last DEMAND_WINDOW_DAYS, per copy), and
   * how many people are waiting for it right now (reservations + borrow requests).
 
-The result is only a SUGGESTION. Nothing changes until an Admin applies it.
+The result is used to suggest a borrowing duration when a librarian checks out a book.
 """
 from collections import namedtuple
 from datetime import timedelta
@@ -50,29 +50,38 @@ def demand_for_books(books):
         per_copy = n_loans / max(b.total_copies, 1)
         is_new = b.created_at >= now - timedelta(days=NEW_BOOK_DAYS)
 
-        if n_queued >= 1 or waiting >= HIGH_WAITING or per_copy >= HIGH_LOANS_PER_COPY:
+        if waiting >= HIGH_WAITING or per_copy >= HIGH_LOANS_PER_COPY:
             level = HIGH
-            reason = (f"{waiting} waiting now" if waiting >= HIGH_WAITING or n_queued
+            reason = (f"{waiting} people waiting" if waiting >= HIGH_WAITING
                       else f"{n_loans} loans in {DEMAND_WINDOW_DAYS} days for {b.total_copies} copy(ies)")
         elif per_copy < LOW_LOANS_PER_COPY and waiting == 0:
             level, reason = LOW, f"{n_loans} loan(s) in the last {DEMAND_WINDOW_DAYS} days, nobody waiting"
         else:
-            level, reason = NORMAL, f"{n_loans} loan(s) in the last {DEMAND_WINDOW_DAYS} days"
+            level, reason = NORMAL, (
+                f"{n_loans} loan(s) in the last {DEMAND_WINDOW_DAYS} days, {waiting} waiting"
+            )
         result[b.id] = Demand(level, LEVEL_LABELS[level], is_new, n_loans, waiting, n_queued, reason)
     return result
 
 
 def suggest_tier(demand, tiers=None):
-    """High demand or newly acquired -> shortest active tier; low demand -> longest; otherwise the default.
-    Returns None when there is nothing sensible to suggest (e.g. no active tiers)."""
+    """Suggest the maximum borrowing period from demand and book age.
+
+    High demand uses the shortest active tier. Newly acquired books use the
+    configured default tier. Low demand uses the longest active tier, while
+    normal demand uses the configured default tier.
+    """
     tiers = tiers if tiers is not None else list(BorrowingTier.objects.filter(is_active=True).order_by('days', 'id'))
     if not tiers:
         return None
-    if demand.level == HIGH or demand.is_new:
+    default_tier = next((t for t in tiers if t.is_default), None) or tiers[0]
+    if demand.level == HIGH:
         return tiers[0]
+    if demand.is_new:
+        return default_tier
     if demand.level == LOW:
         return tiers[-1]
-    return next((t for t in tiers if t.is_default), None) or tiers[0]
+    return default_tier
 
 
 def tier_suggestions(books=None):
@@ -94,3 +103,10 @@ def tier_suggestions(books=None):
     order = {HIGH: 0, NORMAL: 1, LOW: 2}
     rows.sort(key=lambda r: (order[r['demand'].level], r['book'].title.lower()))
     return rows
+
+
+def maximum_borrow_days(book):
+    """Return the current suggested maximum borrowing period for a book."""
+    demand = demand_for_books([book])[book.id]
+    suggested = suggest_tier(demand)
+    return suggested.days if suggested else book.resolve_loan_terms().days

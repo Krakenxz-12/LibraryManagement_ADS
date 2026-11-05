@@ -59,7 +59,7 @@
               <select name="book_id" id="borrow-book-select" class="form-control" required onchange="updateBorrowSummary()">
                 <option value="" disabled selected>Select a book from the available catalog...</option>
                 {% for b in available_books %}
-                  <option value="{{ b.id }}" data-title="{{ b.title }}" data-author="{{ b.author }}" data-shelf="{{ b.shelf_number|default:'General Stacks' }}" data-days="{{ b.loan_terms.days }}" data-tier="{{ b.loan_terms.name }}">
+                  <option value="{{ b.id }}" data-title="{{ b.title }}" data-author="{{ b.author }}" data-shelf="{{ b.shelf_number|default:'General Stacks' }}" data-days="{{ b.borrow_terms.days }}" data-tier="{{ b.borrow_terms.name }}" data-demand="{{ b.demand.label }}" data-reason="{{ b.demand.reason }}" data-new="{{ b.demand.is_new|yesno:'true,false' }}" data-suggested-tier-id="{{ b.borrow_terms.tier.id|default:'' }}">
                     {{ b.title }} by {{ b.author }} ({{ b.available_copies }} copies available)
                   </option>
                 {% endfor %}
@@ -67,9 +67,15 @@
             </div>
 
             <div class="form-group" style="margin-bottom: 0;">
-              <label class="form-label">Loan Duration</label>
-              <input type="text" id="borrow-days-display" class="form-control" value="Select a book to see its loan period" readonly>
-              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Set by the book's borrowing tier. The period starts now, when the book is handed over.</div>
+              <label class="form-label" for="borrow-tier-select">Borrow Duration / Tier *</label>
+              <select name="tier_id" id="borrow-tier-select" class="form-control" required onchange="updateBorrowSummary()" disabled>
+                <option value="">Select a book first...</option>
+                {% for tier in active_tiers %}
+                <option value="{{ tier.id }}" data-days="{{ tier.days }}">{{ tier.name }} ({{ tier.days }} days)</option>
+                {% endfor %}
+              </select>
+              <div id="borrow-demand-reason" style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">The system suggestion will be preselected. The librarian may choose any active tier.</div>
+              <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">The selected borrow period starts when the book is handed over.</div>
             </div>
           </div>
         </div>
@@ -158,7 +164,7 @@
               {% if txn.is_currently_overdue %}
                 <span class="status-badge overdue">{{ txn.days_overdue }} Days Late</span>
               {% else %}
-                <span class="status-badge borrowed">Within Loan Period</span>
+                <span class="status-badge borrowed">Within Borrow Period</span>
               {% endif %}
             </td>
             <td style="text-align: right;">
@@ -260,6 +266,8 @@ function switchCirculationTab(tab) {
   btnHistory.classList.toggle('active', tab === 'history');
 }
 
+let lastBorrowBookId = '';
+
 function updateBorrowSummary() {
   const memberSel = document.getElementById('borrow-member-select');
   const bookSel = document.getElementById('borrow-book-select');
@@ -276,12 +284,34 @@ function updateBorrowSummary() {
     document.getElementById('sum-shelf').textContent = selectedBook.getAttribute('data-shelf');
   }
 
-  const daysDisplay = document.getElementById('borrow-days-display');
-  const days = (selectedBook && selectedBook.value) ? parseInt(selectedBook.getAttribute('data-days'), 10) : 0;
-  if (days) {
-    daysDisplay.value = days + ' days (' + selectedBook.getAttribute('data-tier') + ')';
+  const tierSelect = document.getElementById('borrow-tier-select');
+  if (selectedBook && selectedBook.value) {
+    tierSelect.disabled = false;
+    if (lastBorrowBookId !== selectedBook.value) {
+      const suggestedTierId = selectedBook.getAttribute('data-suggested-tier-id');
+      if (suggestedTierId) {
+        tierSelect.value = suggestedTierId;
+      } else {
+        tierSelect.selectedIndex = 1;
+      }
+      lastBorrowBookId = selectedBook.value;
+    }
+    const demand = selectedBook.getAttribute('data-demand');
+    const isNew = selectedBook.getAttribute('data-new') === 'true';
+    document.getElementById('borrow-demand-reason').textContent =
+      'System suggestion: ' + selectedBook.getAttribute('data-tier') + ' (' + selectedBook.getAttribute('data-days') + ' days) - ' + demand +
+      (isNew ? ' - Newly acquired. ' : '. ') + selectedBook.getAttribute('data-reason') + ' You may choose another active tier.';
   } else {
-    daysDisplay.value = 'Select a book to see its loan period';
+    tierSelect.disabled = true;
+    tierSelect.value = '';
+    lastBorrowBookId = '';
+    document.getElementById('borrow-demand-reason').textContent = 'The system suggestion will be preselected. The librarian may choose any active tier.';
+    document.getElementById('sum-due-date').textContent = '-';
+    return;
+  }
+  const selectedTier = tierSelect.options[tierSelect.selectedIndex];
+  const days = selectedTier && selectedTier.value ? parseInt(selectedTier.getAttribute('data-days'), 10) : 0;
+  if (!days) {
     document.getElementById('sum-due-date').textContent = '-';
     return;
   }

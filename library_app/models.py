@@ -380,6 +380,8 @@ class BorrowRequest(models.Model):
     book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='borrow_requests')
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='PENDING', db_index=True)
     requested_at = models.DateTimeField(auto_now_add=True)
+    requested_days = models.PositiveSmallIntegerField(default=14, help_text='Borrowing duration selected by the librarian.')
+    borrowing_tier = models.ForeignKey(BorrowingTier, on_delete=models.SET_NULL, null=True, blank=True, related_name='borrow_requests')
     handled_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='handled_borrow_requests')
     handled_at = models.DateTimeField(null=True, blank=True)
     pickup_deadline = models.DateTimeField(null=True, blank=True)

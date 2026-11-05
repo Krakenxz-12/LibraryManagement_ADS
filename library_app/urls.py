@@ -65,7 +65,6 @@ urlpatterns = [
     path('management/settings/tiers/<int:tier_id>/edit/', views.tier_update_view, name='tier_update'),
     path('management/settings/tiers/<int:tier_id>/toggle/', views.tier_toggle_view, name='tier_toggle'),
     path('management/settings/tiers/<int:tier_id>/make-default/', views.tier_make_default_view, name='tier_make_default'),
-    path('management/settings/books/<int:book_id>/apply-tier/', views.apply_tier_suggestion_view, name='apply_tier_suggestion'),
     path('management/librarians/', views.librarian_list_view, name='librarian_list'),
     path('management/librarians/new/', views.librarian_create_view, name='librarian_create'),
     path('management/librarians/<int:user_id>/edit/', views.librarian_update_view, name='librarian_update'),
