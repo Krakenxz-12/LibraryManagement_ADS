@@ -21,7 +21,7 @@ from .models import (
     UserProfile, Category, Member, Book, BorrowTransaction,
     Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, BorrowingTier, ACTIVE_LOAN_STATUSES
 )
-from .forms import LibrarySettingsForm
+from .forms import LibrarySettingsForm, MemberSelfProfileForm
 from .services import (
     HoldError, weekly_allowance, expire_stale_holds, promote_reservations, submit_borrow_request,
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
@@ -304,6 +304,44 @@ def member_toggle_status_view(request, member_id):
     log_audit(request, 'TOGGLE_MEMBER_STATUS', 'Member', member.id, msg)
     messages.info(request, msg)
     return redirect('member_list')
+
+
+@login_required
+def my_profile_view(request):
+    """Show and update only the signed-in member's editable personal details."""
+    profile = getattr(request.user, 'profile', None)
+    if not profile or not profile.is_member:
+        messages.error(request, "The My Profile page is available to member accounts only.")
+        return redirect('dashboard')
+
+    member = Member.objects.filter(user=request.user).first()
+    if not member:
+        messages.error(request, "Your membership record could not be found. Please contact a librarian.")
+        return redirect('dashboard')
+
+    if request.method == 'POST':
+        form = MemberSelfProfileForm(request.POST, instance=member)
+        if form.is_valid():
+            updated_member = form.save()
+            # Keep Django's account name and the optional UserProfile phone in sync.
+            request.user.first_name = updated_member.first_name
+            request.user.last_name = updated_member.last_name
+            request.user.save(update_fields=['first_name', 'last_name'])
+            if profile.phone != updated_member.phone:
+                profile.phone = updated_member.phone
+                profile.save(update_fields=['phone'])
+            log_audit(request, 'UPDATE_OWN_PROFILE', 'Member', member.id,
+                      f"Member {member.member_id} updated their personal profile.")
+            messages.success(request, "Your profile has been updated successfully.")
+            return redirect('my_profile')
+        messages.error(request, "Please correct the errors below.")
+    else:
+        form = MemberSelfProfileForm(instance=member)
+
+    return render(request, 'library_app/my_profile.html', {
+        'member': member,
+        'form': form,
+    })
 
 
 @login_required

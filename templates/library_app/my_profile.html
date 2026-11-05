@@ -1,0 +1,58 @@
+{% extends 'library_app/base.html' %}
+
+{% block title %}My Profile{% endblock %}
+{% block breadcrumb %}My Profile{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title">My Profile</h1>
+    <p class="page-description">Manage your personal and contact information. Membership and account details are maintained by the library.</p>
+  </div>
+</div>
+
+<div class="content-grid" style="display:grid; grid-template-columns:minmax(0, 1.5fr) minmax(260px, 1fr); gap:1.25rem; align-items:start;">
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title">Personal and Contact Information</h2>
+    </div>
+    <form method="post" novalidate class="card-body">
+      {% csrf_token %}
+      {% if form.non_field_errors %}<div class="alert alert-error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="form-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem;">
+        {% for field in form %}
+        <div class="form-group" {% if field.name == 'address' %}style="grid-column:1/-1;"{% endif %}>
+          <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}{% if field.field.required %} <span aria-hidden="true">*</span>{% endif %}</label>
+          {{ field }}
+          {% if field.help_text %}<small class="form-help">{{ field.help_text }}</small>{% endif %}
+          {% for error in field.errors %}<small class="form-error" style="display:block;color:#b91c1c;">{{ error }}</small>{% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:1.25rem;">
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="card-header"><h2 class="card-title">Membership Information</h2></div>
+    <div class="card-body">
+    <dl style="display:grid;grid-template-columns:1fr;gap:.9rem;margin:0;">
+      <div><dt class="stat-label">Member ID</dt><dd style="margin:.2rem 0 0;font-weight:700;">{{ member.member_id }}</dd></div>
+      <div><dt class="stat-label">User ID</dt><dd style="margin:.2rem 0 0;">{{ request.user.id }}</dd></div>
+      <div><dt class="stat-label">University Email</dt><dd style="margin:.2rem 0 0;overflow-wrap:anywhere;">{{ member.email }}</dd></div>
+      <div><dt class="stat-label">Membership Type</dt><dd style="margin:.2rem 0 0;">{{ member.get_membership_type_display }}</dd></div>
+      <div><dt class="stat-label">Membership Status</dt><dd style="margin:.2rem 0 0;"><span class="status-badge {% if member.status == 'ACTIVE' %}available{% elif member.status == 'SUSPENDED' %}overdue{% else %}neutral{% endif %}">{{ member.get_status_display }}</span></dd></div>
+      <div><dt class="stat-label">Outstanding Balance</dt><dd style="margin:.2rem 0 0;font-weight:700;">₱{{ member.balance|floatformat:2 }}</dd></div>
+      <div><dt class="stat-label">Created At</dt><dd style="margin:.2rem 0 0;">{{ member.created_at|date:"M d, Y g:i A" }}</dd></div>
+      <div><dt class="stat-label">Last Updated</dt><dd style="margin:.2rem 0 0;">{{ member.updated_at|date:"M d, Y g:i A" }}</dd></div>
+    </dl>
+    <p class="form-help" style="margin-top:1.25rem;">For changes to your email, membership type, status, or balance, please contact a librarian.</p>
+    </div>
+  </section>
+</div>
+<style>
+@media (max-width: 760px) { .content-grid { grid-template-columns:1fr !important; } }
+</style>
+{% endblock %}

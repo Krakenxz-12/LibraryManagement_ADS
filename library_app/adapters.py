@@ -1,11 +1,35 @@
+from django.conf import settings
+from django.contrib import messages
 from django.db import transaction
+from django.shortcuts import redirect
+from allauth.core.exceptions import ImmediateHttpResponse
 from allauth.socialaccount.adapter import DefaultSocialAccountAdapter
 
 from .models import Member, UserProfile
 
 
 class LibrarySocialAccountAdapter(DefaultSocialAccountAdapter):
-    """Create Google-only accounts as Members, never as staff accounts."""
+    """Allow only PSU Google accounts and create them as Members, never staff."""
+
+    def _has_allowed_email_domain(self, email):
+        domain = getattr(settings, 'PSU_EMAIL_DOMAIN', 'psu.palawan.edu.ph').strip().lower()
+        email = (email or '').strip().lower()
+        return bool(domain and email.endswith(f'@{domain}'))
+
+    def pre_social_login(self, request, sociallogin):
+        """Reject non-PSU accounts before either login or signup can complete."""
+        email = getattr(sociallogin.user, 'email', '')
+        if not self._has_allowed_email_domain(email):
+            messages.error(
+                request,
+                'Access denied. Please sign in using your @psu.palawan.edu.ph university account.'
+            )
+            raise ImmediateHttpResponse(redirect('login'))
+
+    def is_open_for_signup(self, request, sociallogin):
+        """Apply the same domain rule to new social-account registrations."""
+        email = getattr(sociallogin.user, 'email', '')
+        return self._has_allowed_email_domain(email)
 
     @transaction.atomic
     def save_user(self, request, sociallogin, form=None):

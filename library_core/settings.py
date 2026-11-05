@@ -157,8 +157,11 @@ LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'dashboard'
 
 # Google OAuth credentials are stored in .env, not committed to source control.
+# Only university Google accounts may use social login. Override in .env if needed.
+PSU_EMAIL_DOMAIN = os.environ.get('PSU_EMAIL_DOMAIN', 'psu.palawan.edu.ph').strip().lower()
 SOCIALACCOUNT_ADAPTER = 'library_app.adapters.LibrarySocialAccountAdapter'
-SOCIALACCOUNT_EMAIL_AUTHENTICATION = True
+# Only trust Google's verified PSU-domain email when linking to existing users.
+SOCIALACCOUNT_EMAIL_AUTHENTICATION = False
 SOCIALACCOUNT_EMAIL_AUTHENTICATION_AUTO_CONNECT = True
 SOCIALACCOUNT_STORE_TOKENS = False
 SOCIALACCOUNT_PROVIDERS = {
@@ -169,6 +172,7 @@ SOCIALACCOUNT_PROVIDERS = {
             'key': '',
         },
         'SCOPE': ['profile', 'email'],
+        'EMAIL_AUTHENTICATION': ['psu.palawan.edu.ph'],
         'AUTH_PARAMS': {'prompt': 'select_account'},
     }
 }

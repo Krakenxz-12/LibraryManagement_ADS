@@ -13,6 +13,7 @@ urlpatterns = [
     path('members/<int:member_id>/', views.member_detail_view, name='member_detail'),
     path('members/<int:member_id>/edit/', views.member_edit_view, name='member_edit'),
     path('members/<int:member_id>/toggle-status/', views.member_toggle_status_view, name='member_toggle_status'),
+    path('my-profile/', views.my_profile_view, name='my_profile'),
 
     # Module 2 & 8: Books Catalog & Search
     path('books/', views.book_list_view, name='book_list'),
