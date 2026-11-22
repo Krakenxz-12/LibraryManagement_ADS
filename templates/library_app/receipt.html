@@ -56,11 +56,11 @@
       <span class="summary-val">{{ payment.collected_by.get_full_name|default:payment.collected_by.username }}</span>
     </div>
     <div class="summary-row" style="padding: 0.75rem 0; background: var(--bg-subtle); margin-top: 0.75rem; border-radius: var(--radius-sm); padding-left: 0.5rem; padding-right: 0.5rem;">
-      <span class="summary-label" style="font-size: 0.95rem; font-weight: 700; color: var(--text-heading);">Total Amount Paid (Kabuuang Bayad):</span>
+      <span class="summary-label" style="font-size: 0.95rem; font-weight: 700; color: var(--text-heading);">Total Amount Paid:</span>
       <span class="summary-val" style="font-size: 1.15rem; color: var(--primary);">₱{{ payment.amount_paid }}</span>
     </div>
     <div class="summary-row" style="padding: 0.4rem 0; margin-top: 0.5rem;">
-      <span class="summary-label">Remaining Balance (Natitirang Balanse):</span>
+      <span class="summary-label">Remaining Balance:</span>
       <span class="summary-val" style="color: {% if payment.member.balance > 0 %}#b91c1c{% else %}var(--status-available-text){% endif %};">₱{{ payment.member.balance }}</span>
     </div>
   </div>

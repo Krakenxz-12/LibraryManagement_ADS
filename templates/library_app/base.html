@@ -167,7 +167,7 @@
         <div class="user-profile-info">
           <div class="user-profile-name">{{ user.get_full_name|default:user.username }}</div>
           <div class="user-profile-role">
-            {% if user.profile.role == 'ADMIN' or user.is_superuser %}Tagapangasiwa (Admin){% elif user.profile.role == 'LIBRARIAN' %}Librarian{% else %}Mag-aaral (Student){% endif %}
+            {% if user.profile.role == 'ADMIN' or user.is_superuser %}Admin{% elif user.profile.role == 'LIBRARIAN' %}Librarian{% else %}Student{% endif %}
           </div>
         </div>
       </div>

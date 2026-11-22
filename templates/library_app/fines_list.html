@@ -56,15 +56,15 @@
               </td>
               <td>
                 {% if txn.fine_paid %}
-                  <span class="status-badge available">Bayad na (Paid)</span>
+                  <span class="status-badge available">Paid</span>
                 {% else %}
-                  <span class="status-badge overdue">Hindi pa Bayad (Unpaid)</span>
+                  <span class="status-badge overdue">Unpaid</span>
                 {% endif %}
               </td>
               <td style="text-align: right;">
                 {% if not txn.fine_paid %}
                 <button type="button" class="btn btn-primary btn-sm" onclick="openPaymentModal('{{ txn.id }}', '{{ txn.member.full_name|escapejs }}', '{{ txn.book.title|escapejs }}', '{{ txn.fine_amount }}')">
-                  Tanggapin ang Bayad (Pay)
+                  Record Payment
                 </button>
                 {% else %}
                 <span style="font-size: 0.775rem; color: var(--text-muted);">Settled</span>
@@ -74,8 +74,8 @@
             {% empty %}
             <tr>
               <td colspan="6" class="empty-state">
-                <div class="empty-state-title">Walang natitirang multa (No outstanding fines)</div>
-                <div class="empty-state-text">Lahat ng hiniram na aklat ay naisauli nang maayos.</div>
+                <div class="empty-state-title">No outstanding fines</div>
+                <div class="empty-state-text">All borrowed books have been returned on time or settled.</div>
               </td>
             </tr>
             {% endfor %}
@@ -87,18 +87,18 @@
     <!-- Fine Calculator Tool -->
     <div class="card" style="margin-bottom: 0;">
       <div class="card-header">
-        <h2 class="card-title">Kalkulador ng Multa (Fee Calculator)</h2>
+        <h2 class="card-title">Fee Calculator</h2>
       </div>
       <div class="card-body">
         <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;">
-          Pamantayang bayad sa silid-aklatan: <strong>₱{{ rules.daily_fine_rate }} bawat araw</strong> lampas sa takdang petsa.
+          Standard library fee: <strong>₱{{ rules.daily_fine_rate }} per day</strong> after the due date.
         </p>
         <div class="form-group">
-          <label class="form-label">Bilang ng Araw na Naantala (Days Overdue)</label>
+          <label class="form-label">Days Overdue</label>
           <input type="number" id="calc-days" class="form-control" value="3" min="1" oninput="calculateFine()">
         </div>
         <div style="background: var(--bg-subtle); padding: 0.85rem; border-radius: var(--radius-md); text-align: center; margin-top: 1rem;">
-          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Tinatayang Multa (Estimated Fee)</div>
+          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Estimated Fee</div>
           <div id="calc-result" style="font-size: 1.5rem; font-weight: 700; color: var(--primary); margin-top: 0.25rem;">₱60.00</div>
         </div>
       </div>
@@ -111,19 +111,19 @@
 <div id="tab-history-view" style="display: none;">
   <div class="card">
     <div class="card-header">
-      <h2 class="card-title">Talaan ng mga Resibo (Payment Receipts)</h2>
+      <h2 class="card-title">Payment Receipts</h2>
     </div>
     <div class="table-responsive">
       <table class="table">
         <thead>
           <tr>
-            <th>Resibo No.</th>
-            <th>Miyembro (Member)</th>
-            <th>Halagang Ibinayad</th>
-            <th>Paraan ng Pagbayad</th>
-            <th>Petsa at Oras</th>
-            <th>Tumanggap na Kawani</th>
-            <th style="text-align: right;">Aksyon</th>
+            <th>Receipt No.</th>
+            <th>Member</th>
+            <th>Amount Paid</th>
+            <th>Payment Method</th>
+            <th>Date &amp; Time</th>
+            <th>Received By</th>
+            <th style="text-align: right;">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -150,15 +150,15 @@
             </td>
             <td style="text-align: right;">
               <a href="{% url 'receipt_view' p.receipt_number %}" class="btn btn-secondary btn-sm">
-                Tingnan ang Resibo
+                View Receipt
               </a>
             </td>
           </tr>
           {% empty %}
           <tr>
             <td colspan="7" class="empty-state">
-              <div class="empty-state-title">Wala pang naitalang bayad</div>
-              <div class="empty-state-text">Ang mga opisyal na resibo ng multa ay lilitaw dito.</div>
+              <div class="empty-state-title">No payments recorded yet</div>
+              <div class="empty-state-text">Official fine receipts will appear here.</div>
             </td>
           </tr>
           {% endfor %}
@@ -172,28 +172,28 @@
 <div id="payment-modal" class="modal-overlay">
   <div class="modal-card">
     <div class="modal-header">
-      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Pagtala ng Bayad sa Multa</h3>
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Record Fine Payment</h3>
       <button type="button" onclick="closeModal('payment-modal')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">×</button>
     </div>
     <form id="payment-form" method="POST" action="">
       {% csrf_token %}
       <div class="modal-body">
         <div style="background: var(--bg-subtle); padding: 0.75rem 1rem; border-radius: var(--radius-md); margin-bottom: 1.25rem;">
-          <div style="font-size: 0.8rem; color: var(--text-muted);">Miyembro:</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Member:</div>
           <div id="modal-member-name" style="font-weight: 700; color: var(--text-heading); margin-bottom: 0.4rem;"></div>
-          <div style="font-size: 0.8rem; color: var(--text-muted);">Pamagat ng Aklat:</div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Book Title:</div>
           <div id="modal-book-title" style="font-size: 0.85rem; color: var(--text-body);"></div>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Halaga ng Bayad (₱) *</label>
+          <label class="form-label">Amount Paid (₱) *</label>
           <input type="number" step="0.01" name="amount" id="modal-amount-input" class="form-control" required>
         </div>
 
         <div class="form-group">
-          <label class="form-label">Paraan ng Pagbayad *</label>
+          <label class="form-label">Payment Method *</label>
           <select name="payment_method" class="form-control">
-            <option value="CASH" selected>Cash (Salapi)</option>
+            <option value="CASH" selected>Cash</option>
             <option value="GCASH">GCash</option>
             <option value="MAYA">Maya / PayMaya</option>
             <option value="CARD">Credit / Debit Card</option>
@@ -202,13 +202,13 @@
         </div>
 
         <div class="form-group" style="margin-bottom: 0;">
-          <label class="form-label">Tala o Komento (Notes / Reference No.)</label>
-          <input type="text" name="notes" class="form-control" placeholder="Halimbawa: GCash Reference No. o Resibo">
+          <label class="form-label">Notes / Reference No.</label>
+          <input type="text" name="notes" class="form-control" placeholder="Example: GCash reference no. or receipt">
         </div>
       </div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-secondary" onclick="closeModal('payment-modal')">Kanselahin</button>
-        <button type="submit" class="btn btn-primary">Itala at I-print ang Resibo</button>
+        <button type="button" class="btn btn-secondary" onclick="closeModal('payment-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Record Payment & Print Receipt</button>
       </div>
     </form>
   </div>
