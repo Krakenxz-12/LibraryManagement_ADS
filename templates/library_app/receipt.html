@@ -4,7 +4,7 @@
 {% block breadcrumb %}Payment Receipt{% endblock %}
 
 {% block content %}
-<div class="page-header" style="max-width: 620px; margin: 0 auto 1.5rem;">
+<div class="page-header no-print" style="max-width: 640px; margin: 0 auto 1.5rem;">
   <div>
     <a href="{% if user.profile.is_member %}{% url 'my_fines' %}{% else %}{% url 'fines_list' %}{% endif %}" style="font-size: 0.825rem; color: var(--primary); font-weight: 600;">← Back to {% if user.profile.is_member %}My Fines & Receipts{% else %}Fines & Payments{% endif %}</a>
     <h1 class="page-title" style="margin-top: 0.4rem;">Official Payment Receipt</h1>
@@ -21,48 +21,50 @@
   </div>
 </div>
 
-<div class="card" style="max-width: 620px; margin: 0 auto; box-shadow: var(--shadow-modal);">
-  <div class="card-header" style="text-align: center; justify-content: center; flex-direction: column; padding: 1.75rem 1.5rem 1rem;">
-    <h2 style="font-size: 1.2rem; font-weight: 700; color: var(--text-heading);">School Library Management System</h2>
-    <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.2rem;">Official Fine Payment Transaction Receipt</p>
-    <div style="margin-top: 0.5rem;">
-      <span class="status-badge available" style="font-size: 0.775rem;">Status: Paid in Full</span>
+<article class="receipt-sheet">
+  <header class="receipt-head">
+    <div class="receipt-org">School Library Management System</div>
+    <div class="receipt-title">Official Receipt</div>
+    <div class="receipt-subtitle">Fine Payment</div>
+  </header>
+
+  <div class="receipt-meta">
+    <div>
+      <div class="receipt-meta-label">Receipt No.</div>
+      <div class="receipt-meta-value receipt-mono">{{ payment.receipt_number }}</div>
+    </div>
+    <div style="text-align: right;">
+      <div class="receipt-meta-label">Date &amp; Time</div>
+      <div class="receipt-meta-value">{{ payment.payment_date|date:"F d, Y" }}<br>{{ payment.payment_date|date:"h:i A" }}</div>
     </div>
   </div>
 
-  <div class="card-body" style="padding: 1.25rem 1.75rem;">
-    <div class="summary-row" style="padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
-      <span class="summary-label">Receipt Number:</span>
-      <span class="summary-val">{{ payment.receipt_number }}</span>
-    </div>
-    <div class="summary-row" style="padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
-      <span class="summary-label">Date & Time:</span>
-      <span class="summary-val">{{ payment.payment_date|date:"F d, Y - h:i A" }}</span>
-    </div>
-    <div class="summary-row" style="padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
-      <span class="summary-label">Member Name:</span>
-      <span class="summary-val">{{ payment.member.full_name }} ({{ payment.member.member_id }})</span>
-    </div>
-    <div class="summary-row" style="padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
-      <span class="summary-label">Book Title:</span>
-      <span class="summary-val">{{ payment.transaction.book.title }}</span>
-    </div>
-    <div class="summary-row" style="padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
-      <span class="summary-label">Payment Method:</span>
-      <span class="summary-val">{{ payment.get_payment_method_display }}</span>
-    </div>
-    <div class="summary-row" style="padding: 0.4rem 0; border-bottom: 1px solid var(--border);">
-      <span class="summary-label">Received By:</span>
-      <span class="summary-val">{{ payment.collected_by.get_full_name|default:payment.collected_by.username }}</span>
-    </div>
-    <div class="summary-row" style="padding: 0.75rem 0; background: var(--bg-subtle); margin-top: 0.75rem; border-radius: var(--radius-sm); padding-left: 0.5rem; padding-right: 0.5rem;">
-      <span class="summary-label" style="font-size: 0.95rem; font-weight: 700; color: var(--text-heading);">Total Amount Paid:</span>
-      <span class="summary-val" style="font-size: 1.15rem; color: var(--primary);">₱{{ payment.amount_paid }}</span>
-    </div>
-    <div class="summary-row" style="padding: 0.4rem 0; margin-top: 0.5rem;">
-      <span class="summary-label">Remaining Balance:</span>
-      <span class="summary-val" style="color: {% if payment.member.balance > 0 %}#b91c1c{% else %}var(--status-available-text){% endif %};">₱{{ payment.member.balance }}</span>
-    </div>
+  <table class="receipt-table">
+    <tr><th>Received from</th><td>{{ payment.member.full_name }}<span class="receipt-sub">Member ID: {{ payment.member.member_id }}</span></td></tr>
+    <tr><th>Payment for</th><td>Late return fine &ndash; {{ payment.transaction.book.title }}<span class="receipt-sub">Loan ref: {{ payment.transaction.transaction_code }}</span></td></tr>
+    <tr><th>Payment method</th><td>{{ payment.get_payment_method_display }}{% if payment.notes %}<span class="receipt-sub">{{ payment.notes }}</span>{% endif %}</td></tr>
+    <tr><th>Received by</th><td>{{ payment.collected_by.get_full_name|default:payment.collected_by.username }}</td></tr>
+  </table>
+
+  <div class="receipt-total">
+    <span>Amount Paid</span>
+    <strong>₱{{ payment.amount_paid }}</strong>
   </div>
-</div>
+  <div class="receipt-balance">
+    <span>Remaining balance</span>
+    <span class="{% if payment.member.balance > 0 %}receipt-owing{% endif %}">₱{{ payment.member.balance }}</span>
+  </div>
+
+  <div class="receipt-paid-stamp">{% if payment.member.balance > 0 %}Payment Received{% else %}Paid in Full{% endif %}</div>
+
+  <div class="receipt-signature">
+    <div class="receipt-signature-line"></div>
+    <div>{{ payment.collected_by.get_full_name|default:payment.collected_by.username }}</div>
+    <div class="receipt-sub">Authorized signature</div>
+  </div>
+
+  <footer class="receipt-foot">
+    This is a computer-generated receipt. Please keep it for your records.
+  </footer>
+</article>
 {% endblock %}

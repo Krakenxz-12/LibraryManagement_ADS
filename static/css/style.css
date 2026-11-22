@@ -1017,3 +1017,40 @@ a:hover {
 .review-item:last-child { border-bottom: none; }
 .review-item.is-hidden { opacity: 0.6; }
 .review-error { color: #b91c1c; font-size: 0.8rem; margin-top: 0.35rem; }
+
+
+/* ---------- Printable receipt ---------- */
+.receipt-sheet { max-width: 640px; margin: 0 auto; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg, 12px); box-shadow: var(--shadow-modal); padding: 2rem 2.25rem; position: relative; color: #1f2937; }
+.receipt-head { text-align: center; padding-bottom: 1rem; border-bottom: 2px solid #1f2937; }
+.receipt-org { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.02em; }
+.receipt-title { font-size: 1.6rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 0.35rem; }
+.receipt-subtitle { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em; }
+.receipt-meta { display: flex; justify-content: space-between; gap: 1rem; padding: 1rem 0; border-bottom: 1px dashed #9ca3af; }
+.receipt-meta-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); }
+.receipt-meta-value { font-size: 0.95rem; font-weight: 600; margin-top: 0.15rem; }
+.receipt-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1rem; }
+.receipt-table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; }
+.receipt-table th, .receipt-table td { padding: 0.7rem 0; border-bottom: 1px solid var(--border); vertical-align: top; font-size: 0.9rem; }
+.receipt-table th { width: 32%; text-align: left; font-weight: 500; color: var(--text-muted); }
+.receipt-table td { font-weight: 600; }
+.receipt-sub { display: block; font-size: 0.75rem; font-weight: 400; color: var(--text-muted); margin-top: 0.1rem; }
+.receipt-total { display: flex; justify-content: space-between; align-items: center; margin-top: 1.25rem; padding: 0.9rem 1rem; background: var(--bg-subtle); border: 1px solid #1f2937; border-radius: 6px; }
+.receipt-total span { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
+.receipt-total strong { font-size: 1.6rem; }
+.receipt-balance { display: flex; justify-content: space-between; padding: 0.6rem 1rem 0; font-size: 0.85rem; color: var(--text-muted); }
+.receipt-owing { color: #b91c1c; font-weight: 700; }
+.receipt-paid-stamp { position: absolute; top: 5.5rem; right: 2rem; transform: rotate(-12deg); border: 3px solid #15803d; color: #15803d; padding: 0.2rem 0.8rem; border-radius: 6px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em; font-size: 0.85rem; opacity: 0.8; }
+.receipt-signature { width: 55%; margin: 2.75rem 0 0 auto; text-align: center; font-size: 0.85rem; font-weight: 600; }
+.receipt-signature-line { border-top: 1px solid #1f2937; margin-bottom: 0.3rem; }
+.receipt-foot { margin-top: 1.75rem; padding-top: 0.9rem; border-top: 1px dashed #9ca3af; text-align: center; font-size: 0.75rem; color: var(--text-muted); }
+
+/* ---------- Print: show only the page content, no app chrome ---------- */
+@page { size: A4; margin: 14mm; }
+@media print {
+  html, body { background: #fff !important; display: block !important; }
+  .app-sidebar, .app-topbar, .alert, .no-print, .modal-overlay { display: none !important; }
+  .app-main { margin: 0 !important; padding: 0 !important; min-height: 0 !important; display: block !important; }
+  .app-content { padding: 0 !important; max-width: none !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .receipt-sheet { max-width: 170mm; margin: 0 auto; border: 1px solid #6b7280; border-radius: 0; box-shadow: none; padding: 10mm 12mm; page-break-inside: avoid; break-inside: avoid; }
+}

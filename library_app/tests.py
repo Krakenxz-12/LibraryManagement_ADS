@@ -1279,3 +1279,23 @@ class BookCopyTests(TestCase):
                                          'shelf_number': 'Z', 'copies': 4})
         b = Book.objects.get(isbn='NEW1')
         self.assertEqual(b.copies.count(), 4)
+
+
+class ReceiptPrintLayoutTests(TestCase):
+    def test_receipt_page_has_printable_sheet_and_hides_controls_when_printing(self):
+        cat = Category.objects.create(name='Fiction')
+        book = Book.objects.create(title='Dune', author='F', isbn='R1', category=cat, shelf_number='S', total_copies=1, available_copies=1)
+        lib = User.objects.create_user('lib', password='pw')
+        UserProfile.objects.create(user=lib, role='LIBRARIAN')
+        member = Member.objects.create(member_id='M1', first_name='Ana', last_name='Cruz', email='a@x.com', phone='1')
+        txn = BorrowTransaction.objects.create(
+            transaction_code='TXN-R1', member=member, book=book, issued_by=lib,
+            issue_date=timezone.localdate() - timedelta(days=20), due_date=timezone.localdate() - timedelta(days=6), loan_days=14)
+        FinePayment.objects.create(receipt_number='REC-R-1', transaction=txn, member=member, amount_paid='30.00', collected_by=lib)
+        c = Client(); c.force_login(lib)
+        page = c.get('/receipts/REC-R-1/')
+        self.assertContains(page, 'class="receipt-sheet"')
+        self.assertContains(page, 'Official Receipt')
+        self.assertContains(page, 'Authorized signature')
+        self.assertContains(page, 'no-print')  # the Back / Print / Download buttons are hidden when printing
+        self.assertNotContains(page, 'Kabuuang')
