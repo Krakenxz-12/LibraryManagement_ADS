@@ -31,7 +31,7 @@ class MemberSelfProfileForm(forms.ModelForm):
         widgets = {
             'first_name': forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'given-name'}),
             'last_name': forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'family-name'}),
-            'phone': forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'tel', 'placeholder': 'e.g. 09XXXXXXXXX'}),
+            'phone': forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'tel', 'inputmode': 'numeric', 'placeholder': '09XXXXXXXXX', 'maxlength': '11', 'minlength': '11', 'pattern': '09[0-9]{9}', 'title': 'Enter an 11-digit Philippine mobile number starting with 09.'}),
             'address': forms.Textarea(attrs={'class': 'form-control', 'rows': 3, 'autocomplete': 'street-address'}),
             'date_of_birth': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
         }
@@ -42,6 +42,22 @@ class MemberSelfProfileForm(forms.ModelForm):
             'address': 'Home address',
             'date_of_birth': 'Date of birth',
         }
+
+    def clean_phone(self):
+        phone = (self.cleaned_data.get('phone') or '').strip()
+
+        if not phone.isascii() or not phone.isdigit():
+            raise forms.ValidationError(
+                "Phone number must contain digits only."
+            )
+
+        if len(phone) != 11 or not phone.startswith('09'):
+            raise forms.ValidationError(
+                "Enter a valid Philippine mobile number (09XXXXXXXXX)."
+            )
+
+        return phone
+
 
 
 class BookReviewForm(forms.ModelForm):
