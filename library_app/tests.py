@@ -6,7 +6,7 @@ from django.test import TestCase, Client
 from django.utils import timezone
 
 from .models import (
-    UserProfile, Category, Member, Book, BorrowTransaction, FinePayment, Notification, BookReview, AuditLog,
+    UserProfile, Category, Member, Book, BorrowTransaction, FinePayment, Notification, BookReview, AuditLog, BookCopy, Reservation,
 )
 from .utils import check_and_create_alerts
 
@@ -1146,3 +1146,136 @@ class OverdueSuspensionTests(TestCase):
         self.client.force_login(self.user)
         resp = self.client.get('/my-profile/')
         self.assertContains(resp, 'Suspended automatically')
+
+
+class BookCopyTests(TestCase):
+    def setUp(self):
+        cat = Category.objects.create(name='Fiction')
+        self.book = Book.objects.create(title='Dune', author='F', isbn='C1', category=cat, shelf_number='S', total_copies=3, available_copies=3)
+        self.lib = User.objects.create_user('lib', password='pw')
+        UserProfile.objects.create(user=self.lib, role='LIBRARIAN')
+        self.members = []
+        for i in range(3):
+            u = User.objects.create_user(f'm{i}', password='pw')
+            UserProfile.objects.create(user=u, role='MEMBER')
+            self.members.append(Member.objects.create(user=u, member_id=f'M{i}', first_name=f'M{i}', last_name='X', email=f'm{i}@x.com', phone='1'))
+
+    def book_now(self):
+        return Book.objects.get(pk=self.book.pk)
+
+    def copy(self, n):
+        return BookCopy.objects.get(book=self.book, copy_number=n)
+
+    def test_every_copy_is_named(self):
+        codes = list(self.book.copies.values_list('copy_code', flat=True))
+        self.assertEqual(codes, [f'BK{self.book.pk:04d}-C01', f'BK{self.book.pk:04d}-C02', f'BK{self.book.pk:04d}-C03'])
+
+    def test_lost_copy_lowers_available_and_status_follows(self):
+        from .services import set_copy_status
+        set_copy_status(self.copy(1).id, 'LOST', self.lib, 'Not on the shelf')
+        b = self.book_now()
+        self.assertEqual((b.total_copies, b.available_copies, b.status), (3, 2, 'AVAILABLE'))
+        self.assertEqual(b.copy_counts, {'circulating': 2, 'under_repair': 0, 'lost': 1})
+        self.assertTrue(AuditLog.objects.filter(action='COPY_STATUS', details__contains='Lost').exists())
+
+    def test_cannot_borrow_when_every_copy_is_lost_or_in_repair(self):
+        from .services import set_copy_status, submit_borrow_request, checkout_at_desk, HoldError
+        set_copy_status(self.copy(1).id, 'LOST', self.lib)
+        set_copy_status(self.copy(2).id, 'UNDER_REPAIR', self.lib)
+        set_copy_status(self.copy(3).id, 'LOST', self.lib)
+        b = self.book_now()
+        self.assertEqual((b.available_copies, b.status), (0, 'UNDER_REPAIR'))
+        with self.assertRaises(HoldError):
+            submit_borrow_request(self.members[0], b)
+        with self.assertRaises(HoldError):
+            checkout_at_desk(self.members[0], b.id, self.lib)
+
+    def test_restoring_a_copy_brings_availability_back(self):
+        from .services import set_copy_status
+        set_copy_status(self.copy(1).id, 'UNDER_REPAIR', self.lib)
+        self.assertEqual(self.book_now().available_copies, 2)
+        set_copy_status(self.copy(1).id, 'IN_CIRCULATION', self.lib)
+        self.assertEqual(self.book_now().available_copies, 3)
+
+    def test_loan_uses_a_specific_copy_and_skips_bad_ones(self):
+        from .services import set_copy_status, checkout_at_desk
+        set_copy_status(self.copy(1).id, 'UNDER_REPAIR', self.lib)
+        t1 = checkout_at_desk(self.members[0], self.book.id, self.lib)
+        t2 = checkout_at_desk(self.members[1], self.book.id, self.lib)
+        self.assertEqual((t1.copy.copy_number, t2.copy.copy_number), (2, 3))
+        self.assertEqual(self.book_now().available_copies, 0)
+
+    def test_damaged_copy_returned_does_not_go_back_on_shelf(self):
+        from .services import set_copy_status, checkout_at_desk
+        txn = checkout_at_desk(self.members[0], self.book.id, self.lib)
+        self.assertEqual(self.book_now().available_copies, 2)
+        set_copy_status(txn.copy_id, 'UNDER_REPAIR', self.lib, 'Torn cover')  # on loan: shelf count unchanged
+        self.assertEqual(self.book_now().available_copies, 2)
+        self.client.force_login(self.lib)
+        self.client.post(f'/transactions/{txn.id}/return/')
+        self.assertEqual(self.book_now().available_copies, 2)  # not re-shelved
+        set_copy_status(txn.copy_id, 'IN_CIRCULATION', self.lib)  # repaired
+        self.assertEqual(self.book_now().available_copies, 3)
+
+    def test_good_copy_returned_goes_back_on_shelf(self):
+        from .services import checkout_at_desk
+        txn = checkout_at_desk(self.members[0], self.book.id, self.lib)
+        self.client.force_login(self.lib)
+        self.client.post(f'/transactions/{txn.id}/return/')
+        self.assertEqual(self.book_now().available_copies, 3)
+
+    def test_withdrawing_a_held_copy_bumps_the_latest_hold(self):
+        from .services import set_copy_status, checkout_at_desk, place_reservation
+        # Two copies loaned out, the third is on the shelf, then held for a reservation
+        checkout_at_desk(self.members[0], self.book.id, self.lib)
+        checkout_at_desk(self.members[1], self.book.id, self.lib)
+        Book.objects.filter(pk=self.book.pk).update(available_copies=0)
+        res = place_reservation(self.members[2], self.book_now())
+        Book.objects.filter(pk=self.book.pk).update(available_copies=1)
+        from .services import promote_reservations
+        promote_reservations(self.book_now())
+        res.refresh_from_db()
+        self.assertEqual(res.status, 'READY')
+        self.assertEqual(self.book_now().available_copies, 0)
+        set_copy_status(self.copy(3).id, 'LOST', self.lib)  # the held copy is withdrawn
+        res.refresh_from_db()
+        self.assertEqual(res.status, 'PENDING')  # back in the queue
+        self.assertEqual(self.book_now().available_copies, 0)
+        self.assertTrue(Notification.objects.filter(recipient=self.members[2].user, title__startswith='Reservation update').exists())
+
+    def test_restoring_a_copy_serves_the_waiting_reservation(self):
+        from .services import set_copy_status, place_reservation
+        for n in (1, 2, 3):
+            set_copy_status(self.copy(n).id, 'UNDER_REPAIR', self.lib)
+        # Title is Under Repair so reservations are blocked until a copy is back; reserve via ORM
+        Reservation.objects.create(book=self.book, member=self.members[0], status='PENDING')
+        set_copy_status(self.copy(2).id, 'IN_CIRCULATION', self.lib)
+        res = Reservation.objects.get()
+        self.assertEqual(res.status, 'READY')
+        self.assertEqual(self.book_now().available_copies, 0)
+
+    def test_staff_actions_and_permissions(self):
+        member_client = Client(); member_client.force_login(self.members[0].user)
+        resp = member_client.post(f'/copies/{self.copy(1).id}/status/', {'status': 'LOST'})
+        self.assertIn(resp.status_code, (302, 403))
+        self.assertEqual(self.copy(1).status, 'IN_CIRCULATION')
+        self.client.force_login(self.lib)
+        self.client.post(f'/copies/{self.copy(1).id}/status/', {'status': 'LOST', 'notes': 'gone'})
+        self.assertEqual(self.copy(1).status, 'LOST')
+        self.client.post(f'/books/{self.book.id}/copies/add/')
+        b = self.book_now()
+        self.assertEqual((b.total_copies, b.available_copies, b.copies.count()), (4, 3, 4))
+        self.assertEqual(self.copy(4).copy_code, f'BK{self.book.pk:04d}-C04')
+
+    def test_copies_table_is_staff_only(self):
+        self.client.force_login(self.lib)
+        self.assertContains(self.client.get(f'/books/{self.book.id}/'), 'Update condition')
+        c = Client(); c.force_login(self.members[0].user)
+        self.assertNotContains(c.get(f'/books/{self.book.id}/'), 'Update condition')
+
+    def test_creating_a_book_with_copies_via_form(self):
+        self.client.force_login(self.lib)
+        self.client.post('/books/new/', {'title': 'New', 'author': 'A', 'isbn': 'NEW1', 'category': Category.objects.first().id,
+                                         'shelf_number': 'Z', 'copies': 4})
+        b = Book.objects.get(isbn='NEW1')
+        self.assertEqual(b.copies.count(), 4)

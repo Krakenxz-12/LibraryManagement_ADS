@@ -20,7 +20,7 @@ from django.utils import timezone
 from .models import (
     UserProfile, Category, Member, Book, BorrowTransaction,
     Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, BorrowingTier, ACTIVE_LOAN_STATUSES,
-    BookReview,
+    BookReview, BookCopy,
 )
 from .forms import LibrarySettingsForm, MemberSelfProfileForm, BookReviewForm
 from .services import (
@@ -28,6 +28,7 @@ from .services import (
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
     cancel_reservation as cancel_reservation_service, confirm_reservation_pickup, checkout_at_desk,
     renew_loan, renewal_block_reason, on_loan_returned, refresh_member_standing, suspension_message,
+    return_copy_to_shelf, set_copy_status, add_copy,
 )
 from .demand import demand_for_books, suggest_tier, maximum_borrow_days
 from .reports import (
@@ -487,7 +488,6 @@ def book_edit_view(request, book_id):
         book.shelf_number = request.POST.get('shelf_number', '').strip()
         pub_year = request.POST.get('publication_year')
         book.publication_year = int(pub_year) if pub_year else None
-        book.status = request.POST.get('status', book.status)
         book.cover_image_url = request.POST.get('cover_image_url', book.cover_image_url).strip()
         book.description = request.POST.get('description', '').strip()
         tier_note = ''
@@ -522,7 +522,7 @@ def book_delete_view(request, book_id):
 
     # Books with any borrow history are protected (PROTECT FK) - block with a message instead of a 500 error
     if book.borrows.exists():
-        messages.error(request, f"Cannot delete '{book.title}' because it has borrowing history. Set its status to Lost or Under Repair instead.")
+        messages.error(request, f"Cannot delete '{book.title}' because it has borrowing history. Mark its copies as Lost or Under Repair instead.")
         return redirect('book_list')
 
     title = book.title
@@ -565,6 +565,8 @@ def _render_book_detail(request, book_id, review_form=None):
     elif profile and profile.is_member:
         review_block_reason = "Your account isn't linked to a library membership yet, so you can't post reviews. Please see the librarian."
 
+    loans_by_copy = {loan.copy_id: loan for loan in active_borrows if loan.copy_id}
+
     # Reviews: everyone sees visible ones; staff also see hidden ones (to un-hide them)
     is_staff_user = _is_staff_user(request.user)
     review_qs = book.reviews.select_related('member')
@@ -581,6 +583,9 @@ def _render_book_detail(request, book_id, review_form=None):
         'can_review': can_review,
         'review_block_reason': review_block_reason,
         'is_staff_user': is_staff_user,
+        'copy_counts': book.copy_counts,
+        'copy_rows': ([{'copy': c, 'loan': loans_by_copy.get(c.id)} for c in book.copies.all()] if is_staff_user else []),
+        'copy_status_choices': BookCopy.STATUS_CHOICES,
         'book': book,
         'loan_terms': book.resolve_loan_terms(),
         'demand': demand,
@@ -598,6 +603,33 @@ def _render_book_detail(request, book_id, review_form=None):
         ),
     }
     return render(request, 'library_app/book_detail.html', context)
+
+
+# ----- Named copies (staff) -----
+
+@login_required
+@librarian_required
+@require_POST
+def book_copy_status_view(request, copy_id):
+    """Mark one specific copy In Circulation, Under Repair or Lost."""
+    copy = get_object_or_404(BookCopy.objects.select_related('book'), id=copy_id)
+    try:
+        updated = set_copy_status(copy.id, request.POST.get('status', ''), user=request.user, note=request.POST.get('notes', ''))
+        messages.success(request, f"{updated.copy_code} is now {updated.get_status_display()}. "
+                                  f"'{copy.book.title}' now has {Book.objects.get(pk=copy.book_id).available_copies} available copies.")
+    except HoldError as exc:
+        messages.error(request, str(exc))
+    return redirect('book_detail', book_id=copy.book_id)
+
+
+@login_required
+@librarian_required
+@require_POST
+def book_copy_add_view(request, book_id):
+    book = get_object_or_404(Book, id=book_id)
+    copy = add_copy(book.id, user=request.user)
+    messages.success(request, f"Added {copy.copy_code} ({copy.name}) to '{book.title}'.")
+    return redirect('book_detail', book_id=book.id)
 
 
 # ----- Book ratings & reviews -----
@@ -774,8 +806,9 @@ def return_process_view(request, transaction_id):
 
         # Put the copy back on the shelf (save the count!) and check reservations
         book = Book.objects.select_for_update().get(pk=txn.book_id)
-        book.available_copies = min(book.available_copies + 1, book.total_copies)
-        book.save(update_fields=['available_copies'])
+        back_on_shelf = return_copy_to_shelf(book, txn.copy)
+        if not back_on_shelf:
+            messages.warning(request, f"{txn.copy.copy_code} is marked {txn.copy.get_status_display()}, so it was not put back on the shelf.")
         promoted = promote_reservations(book)
         if promoted:
             nxt = promoted[0]

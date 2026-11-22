@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import BookReview, BorrowingTier, UserProfile, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, Notification, AuditLog
+from .models import BookCopy, BookReview, BorrowingTier, UserProfile, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, Notification, AuditLog
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
@@ -63,3 +63,10 @@ class BookReviewAdmin(admin.ModelAdmin):
     list_display = ('book', 'member', 'rating', 'is_hidden', 'updated_at')
     list_filter = ('rating', 'is_hidden')
     search_fields = ('book__title', 'member__first_name', 'member__last_name', 'member__member_id', 'comment')
+
+
+@admin.register(BookCopy)
+class BookCopyAdmin(admin.ModelAdmin):
+    list_display = ('copy_code', 'book', 'copy_number', 'status', 'status_changed_at')
+    list_filter = ('status',)
+    search_fields = ('copy_code', 'book__title', 'book__isbn')

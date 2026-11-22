@@ -254,6 +254,25 @@ class Book(models.Model):
             return LoanTerms(tier.days, tier.name, tier, 'default')
         return LoanTerms(getattr(settings, 'BORROW_PERIOD_DAYS', 14), 'Standard', None, 'fallback')
 
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if kwargs.get('update_fields') is None:
+            self.ensure_copy_rows()
+
+    def ensure_copy_rows(self):
+        """Make sure every owned copy (total_copies) has its own named BookCopy record."""
+        existing = self.copies.count()
+        for number in range(existing + 1, self.total_copies + 1):
+            BookCopy.objects.create(book=self, copy_number=number, copy_code=BookCopy.make_code(self, number))
+
+    @property
+    def copy_counts(self):
+        """Breakdown of the named copies: in circulation, under repair, lost."""
+        counts = {'IN_CIRCULATION': 0, 'UNDER_REPAIR': 0, 'LOST': 0}
+        for status in self.copies.values_list('status', flat=True):
+            counts[status] = counts.get(status, 0) + 1
+        return {'circulating': counts['IN_CIRCULATION'], 'under_repair': counts['UNDER_REPAIR'], 'lost': counts['LOST']}
+
     @property
     def review_summary(self):
         """Average rating and count of the visible reviews: {'average': 4.3, 'count': 7}."""
@@ -276,8 +295,13 @@ class Book(models.Model):
         return f"{self.title} by {self.author} ({self.isbn})"
 
     def update_availability_status(self):
-        """Recompute status from stock/reservations and save status AND stock count."""
-        if self.status not in ['LOST', 'UNDER_REPAIR']:
+        """Recompute status from the copies, stock and reservations; save status AND stock count.
+        A title is Lost / Under Repair only when none of its copies is in circulation."""
+        counts = self.copy_counts if self.pk else {'circulating': 1, 'under_repair': 0, 'lost': 0}
+        if counts['circulating'] == 0 and (counts['under_repair'] or counts['lost']):
+            self.status = 'UNDER_REPAIR' if counts['under_repair'] else 'LOST'
+            self.available_copies = 0
+        else:
             if self.available_copies > 0:
                 self.status = 'AVAILABLE'
             else:
@@ -288,6 +312,43 @@ class Book(models.Model):
                 )
                 self.status = 'RESERVED' if waiting else 'BORROWED'
         self.save(update_fields=['status', 'available_copies'])
+
+
+class BookCopy(models.Model):
+    """One physical, named copy of a book (e.g. BK0012-C02). Its condition decides whether it can circulate:
+    only IN_CIRCULATION copies count towards the book's available copies."""
+    STATUS_CHOICES = [
+        ('IN_CIRCULATION', 'In Circulation'),
+        ('UNDER_REPAIR', 'Under Repair'),
+        ('LOST', 'Lost'),
+    ]
+    book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='copies')
+    copy_number = models.PositiveSmallIntegerField()
+    copy_code = models.CharField(max_length=30, unique=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='IN_CIRCULATION', db_index=True)
+    notes = models.CharField(max_length=255, blank=True)
+    status_changed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['book_id', 'copy_number']
+        verbose_name_plural = 'book copies'
+        constraints = [models.UniqueConstraint(fields=['book', 'copy_number'], name='unique_copy_number_per_book')]
+
+    def __str__(self):
+        return f"{self.copy_code} ({self.book.title}, copy {self.copy_number})"
+
+    @staticmethod
+    def make_code(book, number):
+        return f"BK{book.pk:04d}-C{number:02d}"
+
+    @property
+    def name(self):
+        return f"Copy {self.copy_number}"
+
+    @property
+    def current_loan(self):
+        return self.loans.filter(status__in=ACTIVE_LOAN_STATUSES).select_related('member').first()
 
 
 class BookReview(models.Model):
@@ -335,6 +396,7 @@ class BorrowTransaction(models.Model):
     tier_name = models.CharField(max_length=50, blank=True)  # borrowing tier in force at checkout
     renewal_count = models.PositiveSmallIntegerField(default=0)
     fine_paid = models.BooleanField(default=False)
+    copy = models.ForeignKey('BookCopy', on_delete=models.SET_NULL, null=True, blank=True, related_name='loans')
     suspension_counted = models.BooleanField(default=False)  # this overdue loan has already caused a suspension strike
     reading_progress = models.PositiveIntegerField(default=0)  # e.g. 6% or 0% reading completion
     notes = models.TextField(blank=True)

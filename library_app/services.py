@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from .models import (
     ACTIVE_LOAN_STATUSES, SUSPENSION_LOCK_DAYS, SUSPENSION_STRIKES_FOR_SHORT_LOANS,
-    AuditLog, Book, BorrowRequest, BorrowTransaction, BorrowingTier, LibrarySettings, Member, Notification, Reservation,
+    AuditLog, Book, BookCopy, BorrowRequest, BorrowTransaction, BorrowingTier, LibrarySettings, Member, Notification, Reservation,
 )
 from .demand import demand_for_books, suggest_tier
 
@@ -162,6 +162,104 @@ def on_loan_returned(txn):
     refresh_member_standing(txn.member)
 
 
+# ---------------------------------------------------------------- named copies
+# Every physical copy has its own record (BookCopy). Only IN_CIRCULATION copies can be lent; a copy that is
+# Under Repair or Lost leaves the shelf, so the book's available count drops and it cannot be borrowed.
+COPY_STATUS_LABELS = dict(BookCopy.STATUS_CHOICES)
+
+
+def pick_free_copy(book):
+    """A copy that is in good condition and not currently on loan (lowest copy number first)."""
+    on_loan = BorrowTransaction.objects.filter(
+        book=book, status__in=ACTIVE_LOAN_STATUSES, copy__isnull=False).values('copy_id')
+    return (BookCopy.objects.filter(book=book, status='IN_CIRCULATION')
+            .exclude(id__in=on_loan).order_by('copy_number').first())
+
+
+def return_copy_to_shelf(book, copy):
+    """A loaned copy came back. It only becomes available again if it is still in good condition."""
+    if copy is None or copy.status == 'IN_CIRCULATION':
+        book.available_copies = min(book.available_copies + 1, book.total_copies)
+        book.save(update_fields=['available_copies'])
+        return True
+    return False
+
+
+def _bump_hold(book):
+    """A shelf copy was withdrawn but every remaining shelf copy is already held for someone.
+    Release the most recent hold: a reservation goes back to the queue, a request is cancelled."""
+    res = book.reservations.filter(status='READY').select_related('member__user').order_by('-notified_at', '-id').first()
+    if res:
+        res.status, res.notified_at, res.pickup_deadline = 'PENDING', None, None
+        res.save(update_fields=['status', 'notified_at', 'pickup_deadline'])
+        if res.member.user_id:
+            _notify(res.member.user, f"Reservation update: '{book.title}'",
+                    f"The copy held for you was withdrawn from circulation. You are still in the queue and will be notified when another copy is ready.",
+                    'RESERVATION_READY')
+        return True
+    req = book.borrow_requests.filter(status='APPROVED').select_related('member__user').order_by('-handled_at', '-id').first()
+    if req:
+        req.status = 'CANCELLED'
+        req.save(update_fields=['status'])
+        if req.member.user_id:
+            _notify(req.member.user, f"Request cancelled: '{book.title}'",
+                    "The copy set aside for you was withdrawn from circulation. Please submit a new request or reserve the book.")
+        return True
+    return False
+
+
+def set_copy_status(copy_id, new_status, user=None, note=''):
+    """Change a copy's condition (In Circulation / Under Repair / Lost) and keep the book's counts in step.
+    Returns the updated copy."""
+    if new_status not in COPY_STATUS_LABELS:
+        raise HoldError("Unknown copy status.")
+    with transaction.atomic():
+        copy = BookCopy.objects.select_for_update().get(pk=copy_id)
+        book = Book.objects.select_for_update().get(pk=copy.book_id)
+        old = copy.status
+        note = (note or '').strip()
+        if old == new_status:
+            if note != copy.notes:
+                copy.notes = note
+                copy.save(update_fields=['notes'])
+            return copy
+        on_loan = BorrowTransaction.objects.filter(copy=copy, status__in=ACTIVE_LOAN_STATUSES).exists()
+        copy.status, copy.notes, copy.status_changed_at = new_status, note, timezone.now()
+        copy.save(update_fields=['status', 'notes', 'status_changed_at'])
+        if not on_loan:  # a copy that is out on loan is not on the shelf, so the shelf count does not change yet
+            if old == 'IN_CIRCULATION':
+                if book.available_copies > 0:
+                    book.available_copies -= 1
+                else:
+                    _bump_hold(book)
+            elif new_status == 'IN_CIRCULATION':
+                book.available_copies = min(book.available_copies + 1, book.total_copies)
+        book.update_availability_status()  # Lost / Under Repair / Available ... from the copies
+        promote_reservations(book)
+        AuditLog.objects.create(
+            user=user, action='COPY_STATUS', model_name='BookCopy', object_id=str(copy.pk),
+            details=f"{copy.copy_code} ({book.title}): {COPY_STATUS_LABELS[old]} -> {COPY_STATUS_LABELS[new_status]}"
+                    + (f". Note: {note}" if note else '') + (" (currently on loan)" if on_loan else ''),
+        )
+    return copy
+
+
+def add_copy(book_id, user=None):
+    """Register one more physical copy of a book; it goes straight onto the shelf."""
+    with transaction.atomic():
+        book = Book.objects.select_for_update().get(pk=book_id)
+        number = (book.copies.order_by('-copy_number').values_list('copy_number', flat=True).first() or 0) + 1
+        copy = BookCopy.objects.create(book=book, copy_number=number, copy_code=BookCopy.make_code(book, number))
+        book.total_copies = book.copies.count()
+        book.available_copies += 1
+        book.save(update_fields=['total_copies', 'available_copies'])
+        book.update_availability_status()
+        promote_reservations(book)
+        AuditLog.objects.create(user=user, action='COPY_ADDED', model_name='BookCopy', object_id=str(copy.pk),
+                                details=f"Added {copy.copy_code} to '{book.title}'.")
+    return copy
+
+
 # ---------------------------------------------------------------- stock helpers
 def _create_loan(member, book, user, days=None, tier=None):
     """Start a borrow NOW and store the suggested duration on the transaction.
@@ -178,6 +276,9 @@ def _create_loan(member, book, user, days=None, tier=None):
         days = tier.days
     elif days is None:
         days = terms.days
+    copy = pick_free_copy(book)
+    if copy is None:
+        raise HoldError(f"No copy of '{book.title}' is on the shelf in good condition right now.")
     issue_date = timezone.localdate()
     tier_name = terms.name if tier is not None or days == terms.days else (next((item.name for item in active_tiers if item.days == days), None) or f'{days}-day requested')
     shortest = shortest_loan_days() if member.has_shortened_loans else None
@@ -185,7 +286,7 @@ def _create_loan(member, book, user, days=None, tier=None):
         days, tier_name = shortest, f'Restricted ({shortest} days)'
     return BorrowTransaction.objects.create(
         transaction_code=BorrowTransaction.generate_transaction_code(),
-        member=member, book=book, issued_by=user,
+        member=member, book=book, copy=copy, issued_by=user,
         issue_date=issue_date, due_date=issue_date + timedelta(days=days),
         loan_days=days, tier_name=tier_name,
         daily_fine_rate=rules.daily_fine_rate,

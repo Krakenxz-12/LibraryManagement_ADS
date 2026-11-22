@@ -51,14 +51,9 @@
           <input type="number" name="publication_year" class="form-control" value="{{ book.publication_year|default:'' }}">
         </div>
         <div class="form-group">
-          <label class="form-label">Item Status *</label>
-          <select name="status" class="form-control">
-            <option value="AVAILABLE" {% if book.status == 'AVAILABLE' %}selected{% endif %}>Available</option>
-            <option value="BORROWED" {% if book.status == 'BORROWED' %}selected{% endif %}>Borrowed</option>
-            <option value="RESERVED" {% if book.status == 'RESERVED' %}selected{% endif %}>Reserved</option>
-            <option value="LOST" {% if book.status == 'LOST' %}selected{% endif %}>Lost</option>
-            <option value="UNDER_REPAIR" {% if book.status == 'UNDER_REPAIR' %}selected{% endif %}>Under Repair</option>
-          </select>
+          <label class="form-label">Item Status</label>
+          <div class="form-control" style="background: var(--bg-subtle);">{{ book.get_status_display }}</div>
+          <div class="form-hint">Calculated from the copies. Mark individual copies Lost or Under Repair on the book's page.</div>
         </div>
       </div>
 
