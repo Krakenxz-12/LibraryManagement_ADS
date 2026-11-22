@@ -842,7 +842,7 @@ def request_approve_view(request, request_id):
     expire_stale_holds()
     req = get_object_or_404(BorrowRequest, id=request_id)
     try:
-        approve_request(req.id, request.user, request.POST.get('borrowing_tier'))
+        req = approve_request(req.id, request.user, request.POST.get('borrowing_tier'))
     except HoldError as e:
         messages.error(request, str(e))
         return redirect('borrow_request_list')
