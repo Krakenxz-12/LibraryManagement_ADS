@@ -6,7 +6,7 @@ from django.test import TestCase, Client
 from django.utils import timezone
 
 from .models import (
-    UserProfile, Category, Member, Book, BorrowTransaction, FinePayment, Notification,
+    UserProfile, Category, Member, Book, BorrowTransaction, FinePayment, Notification, BookReview, AuditLog,
 )
 from .utils import check_and_create_alerts
 
@@ -894,3 +894,137 @@ class DemandAndSuggestionTests(AdminFeatureBase):
         place_reservation(m3, self.one)
         self.assertIn('High demand', self.cm.get('/books/').content.decode())
 
+
+
+class BookReviewTests(TestCase):
+    def setUp(self):
+        cat = Category.objects.create(name='Fiction')
+        self.book = Book.objects.create(
+            title='Dune', author='Frank Herbert', isbn='222', category=cat,
+            shelf_number='S2', total_copies=1, available_copies=1,
+        )
+        self.users, self.members = {}, {}
+        for i, name in enumerate(['ana', 'ben']):
+            u = User.objects.create_user(name, password='pw')
+            UserProfile.objects.create(user=u, role='MEMBER')
+            m = Member.objects.create(
+                user=u, member_id=f'MEM-2026-000{i + 1}', first_name=name.title(), last_name='Cruz',
+                email=f'{name}@example.com', phone='0917',
+            )
+            self.users[name], self.members[name] = u, m
+        self.lib = User.objects.create_user('lib', password='pw')
+        UserProfile.objects.create(user=self.lib, role='LIBRARIAN')
+        self.url = f'/books/{self.book.id}/review/'
+
+    def login(self, name):
+        c = Client()
+        c.force_login(self.users[name] if name in self.users else self.lib)
+        return c
+
+    def test_member_can_post_and_everyone_sees_it(self):
+        self.login('ana').post(self.url, {'rating': 5, 'comment': 'Brilliant sci-fi classic.'})
+        review = BookReview.objects.get()
+        self.assertEqual((review.rating, review.member, review.book), (5, self.members['ana'], self.book))
+        page = self.login('ben').get(f'/books/{self.book.id}/')
+        self.assertContains(page, 'Brilliant sci-fi classic.')
+        self.assertEqual(self.book.review_summary, {'average': 5.0, 'count': 1})
+
+    def test_profanity_is_rejected_including_evasions(self):
+        for text in ['this is shit', 'what a f*ck1ng mess', 'F U C K', 'fuuuuck this', 'Putang ina mo', 'gago ang author']:
+            resp = self.login('ana').post(self.url, {'rating': 1, 'comment': text})
+            self.assertContains(resp, 'language that is not allowed', msg_prefix=text)
+        self.assertEqual(BookReview.objects.count(), 0)
+        self.assertEqual(AuditLog.objects.filter(action='REVIEW_BLOCKED').count(), 6)
+        self.assertFalse(AuditLog.objects.filter(details__icontains='shit').exists())  # offending text is not logged
+
+    def test_innocent_words_are_not_flagged(self):
+        text = 'A classic. The assassin scene, the Scunthorpe anecdote and the passage on grass were great.'
+        self.login('ana').post(self.url, {'rating': 4, 'comment': text})
+        self.assertEqual(BookReview.objects.get().comment, text)
+
+    def test_links_and_contact_details_are_rejected(self):
+        for text in ['visit www.spam.com', 'email me at a@b.com', 'text 09171234567']:
+            self.login('ana').post(self.url, {'rating': 3, 'comment': text})
+        self.assertEqual(BookReview.objects.count(), 0)
+
+    def test_rating_must_be_1_to_5(self):
+        for bad in ['0', '6', '', 'abc']:
+            self.login('ana').post(self.url, {'rating': bad, 'comment': 'ok'})
+        self.assertEqual(BookReview.objects.count(), 0)
+
+    def test_one_review_per_member_resubmit_edits(self):
+        c = self.login('ana')
+        c.post(self.url, {'rating': 2, 'comment': 'meh'})
+        c.post(self.url, {'rating': 4, 'comment': 'grew on me'})
+        review = BookReview.objects.get()
+        self.assertEqual((review.rating, review.comment), (4, 'grew on me'))
+
+    def test_comment_is_optional(self):
+        self.login('ana').post(self.url, {'rating': 3, 'comment': ''})
+        self.assertEqual(BookReview.objects.get().rating, 3)
+
+    def test_html_in_comment_is_escaped(self):
+        self.login('ana').post(self.url, {'rating': 3, 'comment': '<script>alert(1)</script>'})
+        page = self.login('ben').get(f'/books/{self.book.id}/')
+        self.assertNotContains(page, '<script>alert(1)</script>')
+        self.assertContains(page, '&lt;script&gt;alert(1)&lt;/script&gt;')
+
+    def test_staff_cannot_post_and_anonymous_is_redirected(self):
+        self.login('lib').post(self.url, {'rating': 5, 'comment': 'hi'})
+        self.assertEqual(BookReview.objects.count(), 0)
+        resp = Client().post(self.url, {'rating': 5})
+        self.assertEqual(resp.status_code, 302)
+        self.assertIn('login', resp['Location'])
+
+    def test_suspended_member_cannot_post(self):
+        Member.objects.filter(pk=self.members['ana'].pk).update(status='SUSPENDED')
+        self.login('ana').post(self.url, {'rating': 5, 'comment': 'hi'})
+        self.assertEqual(BookReview.objects.count(), 0)
+
+    def test_delete_permissions(self):
+        review = BookReview.objects.create(book=self.book, member=self.members['ana'], rating=4, comment='x')
+        url = f'/reviews/{review.id}/delete/'
+        self.assertEqual(self.login('ben').post(url).status_code, 403)
+        self.assertTrue(BookReview.objects.exists())
+        self.login('ana').post(url)
+        self.assertFalse(BookReview.objects.exists())
+
+    def test_librarian_can_delete_and_hide(self):
+        review = BookReview.objects.create(book=self.book, member=self.members['ana'], rating=4, comment='visible text')
+        self.login('lib').post(f'/reviews/{review.id}/toggle-hidden/')
+        review.refresh_from_db()
+        self.assertTrue(review.is_hidden)
+        self.assertNotContains(self.login('ben').get(f'/books/{self.book.id}/'), 'visible text')
+        self.assertContains(self.login('lib').get(f'/books/{self.book.id}/'), 'visible text')
+        self.assertEqual(self.book.review_summary['count'], 0)  # hidden reviews do not count
+        self.login('lib').post(f'/reviews/{review.id}/delete/')
+        self.assertFalse(BookReview.objects.exists())
+
+    def test_member_cannot_hide_reviews_and_get_is_not_allowed(self):
+        review = BookReview.objects.create(book=self.book, member=self.members['ana'], rating=4)
+        self.assertEqual(self.login('ben').post(f'/reviews/{review.id}/toggle-hidden/').status_code, 403)
+        self.assertEqual(self.login('ana').get(self.url).status_code, 405)
+
+    def test_book_list_shows_average(self):
+        BookReview.objects.create(book=self.book, member=self.members['ana'], rating=5)
+        BookReview.objects.create(book=self.book, member=self.members['ben'], rating=4)
+        self.assertContains(self.login('ana').get('/books/'), '4.5 (2)')
+
+
+class BookReviewBlockedReasonTests(TestCase):
+    def setUp(self):
+        cat = Category.objects.create(name='Fiction')
+        self.book = Book.objects.create(title='T', author='A', isbn='9', category=cat, shelf_number='S', total_copies=1, available_copies=1)
+
+    def test_unlinked_member_account_sees_why(self):
+        u = User.objects.create_user('g', password='pw')
+        UserProfile.objects.create(user=u, role='MEMBER')
+        c = Client(); c.force_login(u)
+        self.assertContains(c.get(f'/books/{self.book.id}/'), "isn&#x27;t linked to a library membership")
+
+    def test_inactive_member_sees_why(self):
+        u = User.objects.create_user('h', password='pw')
+        UserProfile.objects.create(user=u, role='MEMBER')
+        Member.objects.create(user=u, member_id='M1', first_name='H', last_name='X', email='h@x.com', phone='1', status='INACTIVE')
+        c = Client(); c.force_login(u)
+        self.assertContains(c.get(f'/books/{self.book.id}/'), 'membership is inactive')

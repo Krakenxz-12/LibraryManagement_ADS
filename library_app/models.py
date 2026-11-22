@@ -240,6 +240,14 @@ class Book(models.Model):
         return LoanTerms(getattr(settings, 'BORROW_PERIOD_DAYS', 14), 'Standard', None, 'fallback')
 
     @property
+    def review_summary(self):
+        """Average rating and count of the visible reviews: {'average': 4.3, 'count': 7}."""
+        from django.db.models import Avg, Count
+        agg = self.reviews.filter(is_hidden=False).aggregate(avg=Avg('rating'), n=Count('id'))
+        avg = round(float(agg['avg']), 1) if agg['avg'] is not None else None
+        return {'average': avg, 'count': agg['n']}
+
+    @property
     def availability_percent(self):
         if self.total_copies > 0:
             return int((self.available_copies / self.total_copies) * 100)
@@ -265,6 +273,29 @@ class Book(models.Model):
                 )
                 self.status = 'RESERVED' if waiting else 'BORROWED'
         self.save(update_fields=['status', 'available_copies'])
+
+
+class BookReview(models.Model):
+    """A member's star rating and comment on a book, visible to every member.
+    One review per member per book (submitting again edits it). Comments are screened
+    for profanity before saving (see profanity.py); staff can hide or delete reviews."""
+    book = models.ForeignKey(Book, on_delete=models.CASCADE, related_name='reviews')
+    member = models.ForeignKey(Member, on_delete=models.CASCADE, related_name='reviews')
+    rating = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    comment = models.TextField(max_length=1000, blank=True)
+    is_hidden = models.BooleanField(default=False, help_text='Hidden by staff; not shown to members.')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['book', 'member'], name='one_review_per_member_per_book'),
+            models.CheckConstraint(condition=models.Q(rating__gte=1, rating__lte=5), name='review_rating_1_to_5'),
+        ]
+
+    def __str__(self):
+        return f"{self.member.full_name} rated '{self.book.title}' {self.rating}/5"
 
 
 class BorrowTransaction(models.Model):

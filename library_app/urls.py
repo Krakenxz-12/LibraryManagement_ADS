@@ -21,6 +21,9 @@ urlpatterns = [
     path('books/<int:book_id>/', views.book_detail_view, name='book_detail'),
     path('books/<int:book_id>/edit/', views.book_edit_view, name='book_edit'),
     path('books/<int:book_id>/delete/', views.book_delete_view, name='book_delete'),
+    path('books/<int:book_id>/review/', views.book_review_submit_view, name='book_review_submit'),
+    path('reviews/<int:review_id>/delete/', views.book_review_delete_view, name='book_review_delete'),
+    path('reviews/<int:review_id>/toggle-hidden/', views.book_review_toggle_hidden_view, name='book_review_toggle_hidden'),
 
     # Module 3: Borrowing & Returning
     path('transactions/', views.transaction_list_view, name='transaction_list'),

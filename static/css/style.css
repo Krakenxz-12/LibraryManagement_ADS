@@ -1001,3 +1001,19 @@ a:hover {
   color: var(--text-light);
   margin-top: 0.35rem;
 }
+
+
+/* ---------- Book ratings & reviews ---------- */
+.stars { color: #d6dcd9; letter-spacing: 1px; white-space: nowrap; }
+.stars .on { color: #f59e0b; }
+.star-input { display: inline-flex; flex-direction: row-reverse; gap: 2px; }
+.star-input input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.star-input label { font-size: 1.75rem; line-height: 1; color: #d6dcd9; cursor: pointer; transition: color 0.1s; }
+.star-input input:checked ~ label,
+.star-input label:hover,
+.star-input label:hover ~ label { color: #f59e0b; }
+.star-input input:focus-visible + label { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 4px; }
+.review-item { padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.review-item:last-child { border-bottom: none; }
+.review-item.is-hidden { opacity: 0.6; }
+.review-error { color: #b91c1c; font-size: 0.8rem; margin-top: 0.35rem; }

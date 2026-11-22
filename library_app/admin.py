@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import BorrowingTier, UserProfile, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, Notification, AuditLog
+from .models import BookReview, BorrowingTier, UserProfile, Category, Member, Book, BorrowTransaction, Reservation, FinePayment, Notification, AuditLog
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
@@ -56,3 +56,10 @@ class NotificationAdmin(admin.ModelAdmin):
 class AuditLogAdmin(admin.ModelAdmin):
     list_display = ('timestamp', 'user', 'action', 'model_name', 'object_id')
     list_filter = ('action', 'model_name', 'timestamp')
+
+
+@admin.register(BookReview)
+class BookReviewAdmin(admin.ModelAdmin):
+    list_display = ('book', 'member', 'rating', 'is_hidden', 'updated_at')
+    list_filter = ('rating', 'is_hidden')
+    search_fields = ('book__title', 'member__first_name', 'member__last_name', 'member__member_id', 'comment')

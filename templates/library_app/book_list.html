@@ -75,6 +75,11 @@
               {{ book.title }}
             </a>
             <span style="font-size: 0.775rem; color: var(--text-muted);">By {{ book.author }}</span>
+            {% if book.review_count %}
+            <span style="display: block; font-size: 0.75rem; color: var(--text-muted);" title="{{ book.review_avg|floatformat:1 }} out of 5">
+              <span class="stars"><span class="on">★</span></span> {{ book.review_avg|floatformat:1 }} ({{ book.review_count }})
+            </span>
+            {% endif %}
           </td>
           <!-- Category -->
           <td>

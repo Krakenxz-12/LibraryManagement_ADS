@@ -1,6 +1,7 @@
 from django import forms
 
-from .models import LibrarySettings, Member
+from .models import BookReview, LibrarySettings, Member
+from .profanity import contains_profanity, find_contact_or_link
 
 
 class LibrarySettingsForm(forms.ModelForm):
@@ -41,3 +42,35 @@ class MemberSelfProfileForm(forms.ModelForm):
             'address': 'Home address',
             'date_of_birth': 'Date of birth',
         }
+
+
+class BookReviewForm(forms.ModelForm):
+    """Rating (1-5) plus an optional comment. The comment is screened before it is saved."""
+    rating = forms.TypedChoiceField(
+        choices=[(i, str(i)) for i in range(5, 0, -1)], coerce=int, empty_value=None,
+        widget=forms.RadioSelect, error_messages={'required': 'Please choose a star rating from 1 to 5.'},
+    )
+
+    class Meta:
+        model = BookReview
+        fields = ['rating', 'comment']
+        widgets = {
+            'comment': forms.Textarea(attrs={
+                'class': 'form-control', 'rows': 3, 'maxlength': 1000,
+                'placeholder': 'Share what you thought about this book (optional)',
+            }),
+        }
+
+    def clean_comment(self):
+        comment = ' '.join((self.cleaned_data.get('comment') or '').split())  # trim + collapse whitespace
+        if contains_profanity(comment):
+            raise forms.ValidationError(
+                'Your comment contains language that is not allowed. Please reword it and try again.',
+                code='profanity',
+            )
+        if find_contact_or_link(comment):
+            raise forms.ValidationError(
+                'Please remove links, e-mail addresses and phone numbers from your comment.',
+                code='contact_or_link',
+            )
+        return comment

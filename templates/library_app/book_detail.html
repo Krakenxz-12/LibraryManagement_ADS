@@ -162,4 +162,77 @@
   </div>
 
 </div>
+<!-- Ratings & Reviews -->
+<div class="card" id="reviews" style="margin-bottom: 2rem;">
+  <div class="card-header">
+    <h2 class="card-title">Ratings &amp; Reviews</h2>
+    {% if review_summary.count %}
+    <span style="font-size: 0.85rem; color: var(--text-body);">
+      <span class="stars">{% for i in "12345" %}<span {% if forloop.counter <= review_summary.average|floatformat:0|add:0 %}class="on"{% endif %}>★</span>{% endfor %}</span>
+      <strong>{{ review_summary.average|floatformat:1 }}</strong> / 5 &middot; {{ review_summary.count }} review{{ review_summary.count|pluralize }}
+    </span>
+    {% endif %}
+  </div>
+  <div class="card-body">
+
+    {% if review_block_reason %}
+    <div style="padding: 0.75rem 1rem; margin-bottom: 0.75rem; background: #fef3c7; border: 1px solid #fcd34d; border-radius: var(--radius-md); font-size: 0.85rem; color: #92400e;">{{ review_block_reason }}</div>
+    {% endif %}
+
+    {% if can_review %}
+    <form action="{% url 'book_review_submit' book.id %}" method="POST" style="padding-bottom: 1.25rem; border-bottom: 1px solid var(--border); margin-bottom: 0.5rem;">
+      {% csrf_token %}
+      <div style="font-weight: 600; color: var(--text-heading); margin-bottom: 0.4rem;">{% if my_review %}Edit your review{% else %}Rate this book{% endif %}</div>
+      <div class="star-input">
+        {% for i in "54321" %}
+        <input type="radio" name="rating" id="rate-{{ i }}" value="{{ i }}" {% if review_form.rating.value|stringformat:"s" == i %}checked{% endif %} required>
+        <label for="rate-{{ i }}" title="{{ i }} star{{ i|pluralize }}">★</label>
+        {% endfor %}
+      </div>
+      {% for err in review_form.rating.errors %}<div class="review-error">{{ err }}</div>{% endfor %}
+      <div class="form-group" style="margin-top: 0.75rem;">
+        {{ review_form.comment }}
+        {% for err in review_form.comment.errors %}<div class="review-error">{{ err }}</div>{% endfor %}
+        <div class="form-hint">Up to 1000 characters. Please keep it respectful: profanity, links and contact details are not allowed.</div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-sm">{% if my_review %}Update Review{% else %}Post Review{% endif %}</button>
+    </form>
+    {% endif %}
+
+    {% for review in reviews %}
+    <div class="review-item {% if review.is_hidden %}is-hidden{% endif %}">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap;">
+        <div>
+          <strong style="color: var(--text-heading);">{{ review.member.first_name }} {{ review.member.last_name|slice:":1" }}.</strong>
+          {% if is_staff_user %}<span style="font-size: 0.75rem; color: var(--text-muted);">({{ review.member.member_id }})</span>{% endif %}
+          {% if review.member_id == my_review.member_id %}<span class="status-badge available">You</span>{% endif %}
+          {% if review.is_hidden %}<span class="status-badge overdue">Hidden</span>{% endif %}
+          <div>
+            <span class="stars" title="{{ review.rating }} out of 5">{% for i in "12345" %}<span {% if forloop.counter <= review.rating %}class="on"{% endif %}>★</span>{% endfor %}</span>
+            <span style="font-size: 0.75rem; color: var(--text-muted);">{{ review.updated_at|date:"M d, Y" }}</span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 0.4rem;">
+          {% if is_staff_user %}
+          <form action="{% url 'book_review_toggle_hidden' review.id %}" method="POST">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-secondary btn-sm">{% if review.is_hidden %}Show{% else %}Hide{% endif %}</button>
+          </form>
+          {% endif %}
+          {% if is_staff_user or review.member_id == my_review.member_id %}
+          <form action="{% url 'book_review_delete' review.id %}" method="POST" onsubmit="return confirm('Delete this review?')">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+      {% if review.comment %}<p style="margin: 0.5rem 0 0; font-size: 0.875rem; color: var(--text-body); line-height: 1.5; white-space: pre-line;">{{ review.comment }}</p>{% endif %}
+    </div>
+    {% empty %}
+    <div style="padding: 1rem 0; color: var(--text-muted); font-size: 0.875rem;">No reviews yet{% if can_review %}. Be the first to rate this book!{% endif %}</div>
+    {% endfor %}
+
+  </div>
+</div>
 {% endblock %}

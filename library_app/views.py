@@ -9,19 +9,20 @@ from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.conf import settings
 from django.db import transaction
 from django.http import HttpResponse, JsonResponse
 from django.views.decorators.http import require_POST
-from django.db.models import Q, Count, Sum
+from django.db.models import Q, Count, Sum, Avg
 from django.utils import timezone
 
 from .models import (
     UserProfile, Category, Member, Book, BorrowTransaction,
-    Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, BorrowingTier, ACTIVE_LOAN_STATUSES
+    Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, BorrowingTier, ACTIVE_LOAN_STATUSES,
+    BookReview,
 )
-from .forms import LibrarySettingsForm, MemberSelfProfileForm
+from .forms import LibrarySettingsForm, MemberSelfProfileForm, BookReviewForm
 from .services import (
     HoldError, weekly_allowance, expire_stale_holds, promote_reservations, submit_borrow_request,
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
@@ -378,7 +379,10 @@ def book_list_view(request):
     status_filter = request.GET.get('status', '').strip()
     sort_by = request.GET.get('sort', 'title')
 
-    books = Book.objects.select_related('category').all()
+    books = Book.objects.select_related('category').annotate(
+        review_avg=Avg('reviews__rating', filter=Q(reviews__is_hidden=False)),
+        review_count=Count('reviews', filter=Q(reviews__is_hidden=False)),
+    )
 
     if query:
         books = books.filter(
@@ -525,6 +529,10 @@ def book_delete_view(request, book_id):
 
 @login_required
 def book_detail_view(request, book_id):
+    return _render_book_detail(request, book_id)
+
+
+def _render_book_detail(request, book_id, review_form=None):
     book = get_object_or_404(Book.objects.select_related('category__borrowing_tier', 'borrowing_tier'), id=book_id)
     demand = demand_for_books([book])[book.id]
     active_borrows = book.borrows.filter(status__in=ACTIVE_LOAN_STATUSES).select_related('member')
@@ -535,13 +543,38 @@ def book_detail_view(request, book_id):
     user_has_reserved = False
     user_has_borrowed = False
     user_request = None
+    my_review = None
+    can_review = False
+    review_block_reason = ''
+    profile = getattr(request.user, 'profile', None)
     if hasattr(request.user, 'member_account'):
         member = request.user.member_account
+        my_review = book.reviews.filter(member=member).first()
+        can_review = member.status == 'ACTIVE'
+        if not can_review:
+            review_block_reason = f"Your membership is {member.get_status_display().lower()}, so you can't post reviews right now. Please see the librarian."
         user_has_reserved = book.reservations.filter(member=member, status__in=['PENDING', 'READY']).exists()
         user_has_borrowed = book.borrows.filter(member=member, status__in=ACTIVE_LOAN_STATUSES).exists()
         user_request = book.borrow_requests.filter(member=member, status__in=['PENDING', 'APPROVED']).first()
+    elif profile and profile.is_member:
+        review_block_reason = "Your account isn't linked to a library membership yet, so you can't post reviews. Please see the librarian."
+
+    # Reviews: everyone sees visible ones; staff also see hidden ones (to un-hide them)
+    is_staff_user = _is_staff_user(request.user)
+    review_qs = book.reviews.select_related('member')
+    if not is_staff_user:
+        review_qs = review_qs.filter(is_hidden=False)
+    if review_form is None and can_review:
+        review_form = BookReviewForm(instance=my_review) if my_review else BookReviewForm()
 
     context = {
+        'reviews': review_qs,
+        'review_summary': book.review_summary,
+        'review_form': review_form,
+        'my_review': my_review,
+        'can_review': can_review,
+        'review_block_reason': review_block_reason,
+        'is_staff_user': is_staff_user,
         'book': book,
         'loan_terms': book.resolve_loan_terms(),
         'demand': demand,
@@ -559,6 +592,77 @@ def book_detail_view(request, book_id):
         ),
     }
     return render(request, 'library_app/book_detail.html', context)
+
+
+# ----- Book ratings & reviews -----
+
+def _is_staff_user(user):
+    profile = getattr(user, 'profile', None)
+    return bool(user.is_superuser or (profile and profile.is_librarian))
+
+
+@login_required
+@require_POST
+def book_review_submit_view(request, book_id):
+    """A member adds (or edits) their rating + comment. The comment is screened for profanity."""
+    book = get_object_or_404(Book, id=book_id)
+    member = Member.objects.filter(user=request.user).first()
+    if not member:
+        messages.error(request, "Only library members can rate books. Your account is not linked to a membership.")
+        return redirect('book_detail', book_id=book.id)
+    if member.status != 'ACTIVE':
+        messages.error(request, "Your membership is not active, so you cannot post reviews right now.")
+        return redirect('book_detail', book_id=book.id)
+
+    existing = BookReview.objects.filter(book=book, member=member).first()
+    form = BookReviewForm(request.POST, instance=existing)
+    if not form.is_valid():
+        if 'comment' in form.errors:
+            # Audit that a comment was blocked, without storing the offending text itself
+            codes = {e.code for e in form.errors.as_data().get('comment', [])}
+            if codes & {'profanity', 'contact_or_link'}:
+                log_audit(request, 'REVIEW_BLOCKED', 'BookReview', existing.id if existing else '',
+                          f"Comment by {member.member_id} on '{book.title}' blocked by content filter ({', '.join(sorted(codes))}).")
+        return _render_book_detail(request, book.id, review_form=form)
+
+    review = form.save(commit=False)
+    review.book, review.member = book, member
+    review.is_hidden = False if not existing else existing.is_hidden  # editing never un-hides a staff-hidden review
+    review.save()
+    log_audit(request, 'REVIEW_UPDATED' if existing else 'REVIEW_CREATED', 'BookReview', review.id,
+              f"{member.member_id} rated '{book.title}' {review.rating}/5.")
+    messages.success(request, "Your review was updated." if existing else "Thanks! Your review is now visible to other members.")
+    return redirect('book_detail', book_id=book.id)
+
+
+@login_required
+@require_POST
+def book_review_delete_view(request, review_id):
+    """A member may delete their own review; librarians/admins may delete any review."""
+    review = get_object_or_404(BookReview.objects.select_related('book', 'member'), id=review_id)
+    is_owner = review.member.user_id == request.user.id
+    if not (is_owner or _is_staff_user(request.user)):
+        raise PermissionDenied("You can only delete your own review.")
+    log_audit(request, 'REVIEW_DELETED', 'BookReview', review.id,
+              f"Review by {review.member.member_id} on '{review.book.title}' deleted by {request.user.username}.")
+    book_id = review.book_id
+    review.delete()
+    messages.success(request, "Review deleted.")
+    return redirect('book_detail', book_id=book_id)
+
+
+@login_required
+@librarian_required
+@require_POST
+def book_review_toggle_hidden_view(request, review_id):
+    """Staff moderation: hide an inappropriate review from members (or show it again)."""
+    review = get_object_or_404(BookReview.objects.select_related('book', 'member'), id=review_id)
+    review.is_hidden = not review.is_hidden
+    review.save(update_fields=['is_hidden', 'updated_at'])
+    log_audit(request, 'REVIEW_HIDDEN' if review.is_hidden else 'REVIEW_UNHIDDEN', 'BookReview', review.id,
+              f"Review by {review.member.member_id} on '{review.book.title}' {'hidden' if review.is_hidden else 'restored'} by {request.user.username}.")
+    messages.success(request, "Review hidden from members." if review.is_hidden else "Review is visible again.")
+    return redirect('book_detail', book_id=review.book_id)
 
 
 # ==========================================
