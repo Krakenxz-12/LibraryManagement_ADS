@@ -9,6 +9,10 @@ from decimal import Decimal
 # A loan that has not been returned yet (status flips to OVERDUE automatically)
 ACTIVE_LOAN_STATUSES = ['BORROWED', 'OVERDUE']
 
+# Overdue suspension policy (enforced in services.refresh_member_standing)
+SUSPENSION_STRIKES_FOR_SHORT_LOANS = 3   # from this many consecutive overdue suspensions: shortest loan period only
+SUSPENSION_LOCK_DAYS = 7                 # beyond that: every further suspension lasts at least this many days
+
 
 class LibrarySettings(models.Model):
     """Library rules edited by the Admin. One row only (pk=1), created on first use.
@@ -156,6 +160,13 @@ class Member(models.Model):
     membership_type = models.CharField(max_length=15, choices=MEMBERSHIP_TYPE_CHOICES, default='STUDENT')
     status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='ACTIVE')
     balance = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    # Automatic overdue suspensions
+    suspension_strikes = models.PositiveSmallIntegerField(
+        default=0, help_text='Consecutive suspensions for unreturned books. Reset by returning a book on time.')
+    auto_suspended = models.BooleanField(
+        default=False, help_text='True when the system (not a librarian) suspended this member.')
+    suspended_until = models.DateTimeField(
+        null=True, blank=True, help_text='Earliest automatic reactivation (repeat offenders are locked for a week).')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -168,6 +179,10 @@ class Member(models.Model):
     @property
     def full_name(self):
         return f"{self.first_name} {self.last_name}"
+
+    @property
+    def has_shortened_loans(self):
+        return self.suspension_strikes >= SUSPENSION_STRIKES_FOR_SHORT_LOANS
 
     @property
     def active_borrows_count(self):
@@ -320,6 +335,7 @@ class BorrowTransaction(models.Model):
     tier_name = models.CharField(max_length=50, blank=True)  # borrowing tier in force at checkout
     renewal_count = models.PositiveSmallIntegerField(default=0)
     fine_paid = models.BooleanField(default=False)
+    suspension_counted = models.BooleanField(default=False)  # this overdue loan has already caused a suspension strike
     reading_progress = models.PositiveIntegerField(default=0)  # e.g. 6% or 0% reading completion
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

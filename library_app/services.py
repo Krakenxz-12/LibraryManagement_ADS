@@ -13,7 +13,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import (
-    ACTIVE_LOAN_STATUSES, Book, BorrowRequest, BorrowTransaction, BorrowingTier, LibrarySettings, Notification, Reservation,
+    ACTIVE_LOAN_STATUSES, SUSPENSION_LOCK_DAYS, SUSPENSION_STRIKES_FOR_SHORT_LOANS,
+    AuditLog, Book, BorrowRequest, BorrowTransaction, BorrowingTier, LibrarySettings, Member, Notification, Reservation,
 )
 from .demand import demand_for_books, suggest_tier
 
@@ -63,6 +64,104 @@ def _notify_staff(title, message):
         _notify(staff, title, message, 'LIBRARIAN_ALERT')
 
 
+# ---------------------------------------------------------------- overdue suspensions
+# Policy (constants live in models.py):
+#  * The day after a loan's due date, a member with an unreturned book is suspended automatically.
+#  * They are reactivated automatically once every overdue book is back (and any lock has passed).
+#  * Each automatic suspension is a "strike"; returning a book on time (with nothing else overdue) resets them.
+#  * From the 3rd consecutive strike, new loans only get the shortest active borrowing period.
+#  * Beyond that (4th strike onwards) the suspension also lasts at least a week, even after returning the book.
+#  * A librarian's manual status change always wins: manual suspensions are never auto-reactivated, and
+#    loans that already caused a strike never cause a second one.
+def shortest_loan_days():
+    tier = BorrowingTier.objects.filter(is_active=True).order_by('days', 'id').first()
+    return tier.days if tier else None
+
+
+def suspension_message(member):
+    """Why the member is suspended (safe to show to them), or '' if it was not an automatic suspension."""
+    if member.status != 'SUSPENDED' or not member.auto_suspended:
+        return ''
+    msg = "Your membership is suspended because you have an unreturned overdue book. Return it to be reactivated automatically."
+    if member.suspended_until and member.suspended_until > timezone.now():
+        msg += f" Because of repeated overdue suspensions, it stays suspended until {timezone.localtime(member.suspended_until).strftime('%b %d, %Y %I:%M %p')}."
+    return msg
+
+
+def _log_member_event(action, member, details):
+    AuditLog.objects.create(user=None, action=action, model_name='Member', object_id=str(member.pk), details=details)
+
+
+def refresh_member_standing(member, now=None):
+    """Apply the overdue suspension rules to one member and update the passed instance.
+    Returns 'suspended', 'reactivated' or None (nothing changed)."""
+    now = now or timezone.now()
+    today = timezone.localdate(now)
+    outcome = None
+    with transaction.atomic():
+        m = Member.objects.select_for_update().get(pk=member.pk)
+        overdue = BorrowTransaction.objects.filter(member=m, status__in=ACTIVE_LOAN_STATUSES, due_date__lt=today)
+        if m.status == 'ACTIVE':
+            if overdue.filter(suspension_counted=False).exists():
+                m.suspension_strikes += 1
+                m.status, m.auto_suspended = 'SUSPENDED', True
+                locked = m.suspension_strikes > SUSPENSION_STRIKES_FOR_SHORT_LOANS
+                m.suspended_until = now + timedelta(days=SUSPENSION_LOCK_DAYS) if locked else None
+                m.save(update_fields=['suspension_strikes', 'status', 'auto_suspended', 'suspended_until', 'updated_at'])
+                overdue.update(suspension_counted=True)
+                outcome = 'suspended'
+                msg = "Your membership was suspended because a borrowed book is overdue. Return it and you will be reactivated automatically."
+                if locked:
+                    msg += f" This is suspension #{m.suspension_strikes} in a row, so you stay suspended for at least {SUSPENSION_LOCK_DAYS} days even after returning it."
+                elif m.suspension_strikes == SUSPENSION_STRIKES_FOR_SHORT_LOANS:
+                    msg += " This is your 3rd in a row: your future loans will only get the shortest borrowing period, and further suspensions will last a week."
+                _log_member_event('AUTO_SUSPEND', m, f"{m.member_id} suspended automatically for overdue book(s) (strike {m.suspension_strikes}).")
+                if m.user_id:
+                    _notify(m.user, "Membership suspended", msg, 'OVERDUE')
+                _notify_staff("Member suspended automatically", f"{m.full_name} ({m.member_id}) was suspended for an unreturned book (strike {m.suspension_strikes}).")
+        elif m.status == 'SUSPENDED' and m.auto_suspended:
+            if not overdue.exists() and (m.suspended_until is None or m.suspended_until <= now):
+                m.status, m.auto_suspended, m.suspended_until = 'ACTIVE', False, None
+                m.save(update_fields=['status', 'auto_suspended', 'suspended_until', 'updated_at'])
+                outcome = 'reactivated'
+                _log_member_event('AUTO_REACTIVATE', m, f"{m.member_id} reactivated automatically (all overdue books returned).")
+                if m.user_id:
+                    _notify(m.user, "Membership reactivated", "Thanks for returning your book. Your membership is active again.", 'GENERAL')
+    member.refresh_from_db()
+    return outcome
+
+
+def sync_suspensions(now=None):
+    """Check every member who might need suspending or reactivating. Safe to run as often as you like."""
+    now = now or timezone.now()
+    today = timezone.localdate(now)
+    ids = set(BorrowTransaction.objects.filter(
+        status__in=ACTIVE_LOAN_STATUSES, due_date__lt=today, suspension_counted=False, member__status='ACTIVE',
+    ).values_list('member_id', flat=True))
+    ids |= set(Member.objects.filter(status='SUSPENDED', auto_suspended=True).values_list('id', flat=True))
+    changed = 0
+    for member in Member.objects.filter(id__in=ids):
+        if refresh_member_standing(member, now):
+            changed += 1
+    return changed
+
+
+def on_loan_returned(txn):
+    """Call after a loan is returned: a clean on-time return ends the strike streak, then re-check the member."""
+    with transaction.atomic():
+        m = Member.objects.select_for_update().get(pk=txn.member_id)
+        on_time = bool(txn.return_date and txn.return_date <= txn.due_date)
+        still_overdue = BorrowTransaction.objects.filter(
+            member=m, status__in=ACTIVE_LOAN_STATUSES, due_date__lt=timezone.localdate()).exists()
+        if on_time and not still_overdue and m.suspension_strikes:
+            had_short_loans = m.has_shortened_loans
+            m.suspension_strikes = 0
+            m.save(update_fields=['suspension_strikes', 'updated_at'])
+            if had_short_loans and m.user_id:
+                _notify(m.user, "Borrowing period restored", "Thanks for returning on time. Your borrowing periods are back to normal.", 'GENERAL')
+    refresh_member_standing(txn.member)
+
+
 # ---------------------------------------------------------------- stock helpers
 def _create_loan(member, book, user, days=None, tier=None):
     """Start a borrow NOW and store the suggested duration on the transaction.
@@ -80,17 +179,22 @@ def _create_loan(member, book, user, days=None, tier=None):
     elif days is None:
         days = terms.days
     issue_date = timezone.localdate()
+    tier_name = terms.name if tier is not None or days == terms.days else (next((item.name for item in active_tiers if item.days == days), None) or f'{days}-day requested')
+    shortest = shortest_loan_days() if member.has_shortened_loans else None
+    if shortest is not None and days > shortest:  # repeat overdue offenders only get the shortest period
+        days, tier_name = shortest, f'Restricted ({shortest} days)'
     return BorrowTransaction.objects.create(
         transaction_code=BorrowTransaction.generate_transaction_code(),
         member=member, book=book, issued_by=user,
         issue_date=issue_date, due_date=issue_date + timedelta(days=days),
-        loan_days=days, tier_name=(terms.name if tier is not None or days == terms.days else (next((item.name for item in active_tiers if item.days == days), None) or f'{days}-day requested')),
+        loan_days=days, tier_name=tier_name,
         daily_fine_rate=rules.daily_fine_rate,
         status='BORROWED',
     )
 
 
 def _check_can_collect(member, book):
+    refresh_member_standing(member)
     if member.status != 'ACTIVE':
         raise HoldError(f"Member {member.member_id} is inactive or suspended.")
     if book.status in BLOCKED_BOOK_STATUSES:
@@ -143,8 +247,9 @@ def _release_copy(book):
 def submit_borrow_request(member, book):
     with transaction.atomic():
         book = Book.objects.select_for_update().get(pk=book.pk)
+        refresh_member_standing(member)
         if member.status != 'ACTIVE':
-            raise HoldError("Your membership is not active. Please see the librarian.")
+            raise HoldError(suspension_message(member) or "Your membership is not active. Please see the librarian.")
         if book.status in BLOCKED_BOOK_STATUSES:
             raise HoldError("This book is not available for borrowing right now.")
         if book.available_copies <= 0:
@@ -258,8 +363,9 @@ def confirm_pickup(request_id, user, days=None):
 def place_reservation(member, book):
     with transaction.atomic():
         book = Book.objects.select_for_update().get(pk=book.pk)
+        refresh_member_standing(member)
         if member.status != 'ACTIVE':
-            raise HoldError("This membership is not active.")
+            raise HoldError(suspension_message(member) or "This membership is not active.")
         if book.status in BLOCKED_BOOK_STATUSES:
             raise HoldError(f"'{book.title}' is not available for reservation right now.")
         if book.available_copies > 0:

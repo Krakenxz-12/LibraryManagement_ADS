@@ -38,6 +38,12 @@
           <span class="status-badge overdue">Suspended</span>
         {% endif %}
       </div>
+      {% if member.status == 'SUSPENDED' and member.auto_suspended %}
+      <div style="font-size:.775rem;color:var(--text-muted);margin-top:.35rem;">Suspended automatically (overdue book){% if member.suspended_until %}; locked until {{ member.suspended_until|date:"M d, Y g:i A" }}{% endif %}. Reactivates automatically once all overdue books are returned.</div>
+      {% endif %}
+      {% if member.suspension_strikes %}
+      <div style="font-size:.775rem;color:var(--text-muted);margin-top:.35rem;">Consecutive overdue suspensions: <strong>{{ member.suspension_strikes }}</strong>{% if member.has_shortened_loans %} &middot; shortest borrowing period only{% endif %}</div>
+      {% endif %}
     </div>
   </div>
 

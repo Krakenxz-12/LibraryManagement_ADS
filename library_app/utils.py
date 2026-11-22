@@ -16,7 +16,7 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from django.db.models import Count, Sum
 
-from .services import expire_stale_holds
+from .services import expire_stale_holds, sync_suspensions
 from .models import (
     UserProfile, Member, Book, BorrowTransaction, BorrowingTier,
     Reservation, FinePayment, Notification, AuditLog, ACTIVE_LOAN_STATUSES
@@ -91,6 +91,9 @@ def check_and_create_alerts():
                     'message': f"Your borrowed book '{txn.book.title}' is overdue by {days} day(s). Accumulated fine: ₱{txn.fine_amount:.2f}. Please return it immediately."
                 }
             )
+
+    # 1b. Suspend members with unreturned books; reactivate those who are back in good standing
+    sync_suspensions()
 
     # 2. Upcoming due date warnings (within 2 days)
     upcoming_txns = BorrowTransaction.objects.filter(

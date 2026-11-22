@@ -27,7 +27,7 @@ from .services import (
     HoldError, weekly_allowance, expire_stale_holds, promote_reservations, submit_borrow_request,
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
     cancel_reservation as cancel_reservation_service, confirm_reservation_pickup, checkout_at_desk,
-    renew_loan, renewal_block_reason,
+    renew_loan, renewal_block_reason, on_loan_returned, refresh_member_standing, suspension_message,
 )
 from .demand import demand_for_books, suggest_tier, maximum_borrow_days
 from .reports import (
@@ -278,7 +278,10 @@ def member_edit_view(request, member_id):
         dob = request.POST.get('date_of_birth')
         if dob:
             member.date_of_birth = dob
-        member.status = request.POST.get('status', member.status)
+        new_status = request.POST.get('status', member.status)
+        if new_status != member.status:  # a librarian's manual decision overrides the automatic rules
+            member.auto_suspended, member.suspended_until = False, None
+        member.status = new_status
         new_type = request.POST.get('membership_type', member.membership_type)
         if new_type in dict(Member.MEMBERSHIP_TYPE_CHOICES):
             member.membership_type = new_type
@@ -301,6 +304,7 @@ def member_toggle_status_view(request, member_id):
     else:
         member.status = 'ACTIVE'
         msg = f"Member {member.member_id} activated."
+    member.auto_suspended, member.suspended_until = False, None
     member.save()
     log_audit(request, 'TOGGLE_MEMBER_STATUS', 'Member', member.id, msg)
     messages.info(request, msg)
@@ -319,6 +323,7 @@ def my_profile_view(request):
     if not member:
         messages.error(request, "Your membership record could not be found. Please contact a librarian.")
         return redirect('dashboard')
+    refresh_member_standing(member)  # apply overdue suspension / reactivation rules
 
     if request.method == 'POST':
         form = MemberSelfProfileForm(request.POST, instance=member)
@@ -549,10 +554,11 @@ def _render_book_detail(request, book_id, review_form=None):
     profile = getattr(request.user, 'profile', None)
     if hasattr(request.user, 'member_account'):
         member = request.user.member_account
+        refresh_member_standing(member)  # apply overdue suspension / reactivation rules
         my_review = book.reviews.filter(member=member).first()
         can_review = member.status == 'ACTIVE'
         if not can_review:
-            review_block_reason = f"Your membership is {member.get_status_display().lower()}, so you can't post reviews right now. Please see the librarian."
+            review_block_reason = suspension_message(member) or f"Your membership is {member.get_status_display().lower()}, so you can't post reviews right now. Please see the librarian."
         user_has_reserved = book.reservations.filter(member=member, status__in=['PENDING', 'READY']).exists()
         user_has_borrowed = book.borrows.filter(member=member, status__in=ACTIVE_LOAN_STATUSES).exists()
         user_request = book.borrow_requests.filter(member=member, status__in=['PENDING', 'APPROVED']).first()
@@ -776,6 +782,7 @@ def return_process_view(request, transaction_id):
             messages.info(request, f"'{book.title}' is now held for {nxt.member.full_name} (next in the reservation queue). They have until {timezone.localtime(nxt.pickup_deadline).strftime('%b %d, %I:%M %p')} to collect it.")
 
     log_audit(request, 'RETURN_BOOK', 'BorrowTransaction', txn.id, f"Processed return for {txn.transaction_code}. Fine: ₱{fine:.2f}")
+    on_loan_returned(txn)  # strike reset / automatic reactivation
     return redirect('transaction_list')
 
 

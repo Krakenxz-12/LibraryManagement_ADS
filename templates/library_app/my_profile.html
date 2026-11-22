@@ -44,6 +44,16 @@
       <div><dt class="stat-label">University Email</dt><dd style="margin:.2rem 0 0;overflow-wrap:anywhere;">{{ member.email }}</dd></div>
       <div><dt class="stat-label">Membership Type</dt><dd style="margin:.2rem 0 0;">{{ member.get_membership_type_display }}</dd></div>
       <div><dt class="stat-label">Membership Status</dt><dd style="margin:.2rem 0 0;"><span class="status-badge {% if member.status == 'ACTIVE' %}available{% elif member.status == 'SUSPENDED' %}overdue{% else %}neutral{% endif %}">{{ member.get_status_display }}</span></dd></div>
+      {% if member.status == 'SUSPENDED' and member.auto_suspended %}
+      <div style="padding:.65rem .8rem;background:#fef3c7;border:1px solid #fcd34d;border-radius:var(--radius-md);font-size:.8rem;color:#92400e;">
+        Suspended automatically because a borrowed book is overdue. It is lifted as soon as you return it{% if member.suspended_until %}, but not before {{ member.suspended_until|date:"M d, Y g:i A" }}{% endif %}.
+      </div>
+      {% endif %}
+      {% if member.has_shortened_loans %}
+      <div style="padding:.65rem .8rem;background:#fef3c7;border:1px solid #fcd34d;border-radius:var(--radius-md);font-size:.8rem;color:#92400e;">
+        Because of repeated overdue suspensions ({{ member.suspension_strikes }} in a row), new loans only get the shortest borrowing period. Return a book on time to go back to normal.
+      </div>
+      {% endif %}
       <div><dt class="stat-label">Outstanding Balance</dt><dd style="margin:.2rem 0 0;font-weight:700;">₱{{ member.balance|floatformat:2 }}</dd></div>
       <div><dt class="stat-label">Created At</dt><dd style="margin:.2rem 0 0;">{{ member.created_at|date:"M d, Y g:i A" }}</dd></div>
       <div><dt class="stat-label">Last Updated</dt><dd style="margin:.2rem 0 0;">{{ member.updated_at|date:"M d, Y g:i A" }}</dd></div>

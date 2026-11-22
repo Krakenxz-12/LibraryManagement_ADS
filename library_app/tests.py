@@ -1028,3 +1028,121 @@ class BookReviewBlockedReasonTests(TestCase):
         Member.objects.create(user=u, member_id='M1', first_name='H', last_name='X', email='h@x.com', phone='1', status='INACTIVE')
         c = Client(); c.force_login(u)
         self.assertContains(c.get(f'/books/{self.book.id}/'), 'membership is inactive')
+
+
+class OverdueSuspensionTests(TestCase):
+    def setUp(self):
+        cat = Category.objects.create(name='Fiction')
+        self.books = [Book.objects.create(title=f'B{i}', author='A', isbn=f'90{i}', category=cat, shelf_number='S', total_copies=3, available_copies=3) for i in range(6)]
+        self.user = User.objects.create_user('stu', password='pw')
+        UserProfile.objects.create(user=self.user, role='MEMBER')
+        self.member = Member.objects.create(user=self.user, member_id='M1', first_name='S', last_name='T', email='s@x.com', phone='1')
+        self.lib = User.objects.create_user('lib', password='pw')
+        UserProfile.objects.create(user=self.lib, role='LIBRARIAN')
+
+    def loan(self, book=None, days_ago=10, due_in=-3):
+        today = timezone.localdate()
+        return BorrowTransaction.objects.create(
+            transaction_code=BorrowTransaction.generate_transaction_code(), member=self.member, book=book or self.books[0],
+            issued_by=self.lib, issue_date=today - timedelta(days=days_ago), due_date=today + timedelta(days=due_in), loan_days=7)
+
+    def give_back(self, txn, on=None):
+        txn.status, txn.return_date = 'RETURNED', on or timezone.localdate()
+        txn.save()
+        from .services import on_loan_returned
+        on_loan_returned(txn)
+
+    def sync(self):
+        from .services import sync_suspensions
+        sync_suspensions()
+        self.member.refresh_from_db()
+
+    def test_suspended_the_day_after_due_date_not_before(self):
+        self.loan(due_in=0)  # due today: not overdue yet
+        self.sync()
+        self.assertEqual(self.member.status, 'ACTIVE')
+        BorrowTransaction.objects.all().delete()
+        self.loan(due_in=-1)  # became overdue today
+        self.sync()
+        self.assertEqual((self.member.status, self.member.suspension_strikes, self.member.auto_suspended), ('SUSPENDED', 1, True))
+        self.assertTrue(Notification.objects.filter(recipient=self.user, title='Membership suspended').exists())
+        self.assertTrue(AuditLog.objects.filter(action='AUTO_SUSPEND').exists())
+
+    def test_suspended_member_cannot_request_and_automatic_reactivation_on_return(self):
+        from .services import submit_borrow_request, HoldError
+        txn = self.loan()
+        self.sync()
+        with self.assertRaises(HoldError):
+            submit_borrow_request(self.member, self.books[1])
+        self.give_back(txn)
+        self.member.refresh_from_db()
+        self.assertEqual((self.member.status, self.member.auto_suspended), ('ACTIVE', False))
+        self.assertEqual(self.member.suspension_strikes, 1)  # late return does not clear the strike
+        self.assertTrue(Notification.objects.filter(recipient=self.user, title='Membership reactivated').exists())
+
+    def test_one_unreturned_book_only_costs_one_strike_even_after_manual_reactivation(self):
+        self.loan()
+        self.sync()
+        self.client.force_login(self.lib)
+        self.client.post(f'/members/{self.member.id}/toggle-status/')  # librarian override
+        self.sync()
+        self.assertEqual((self.member.status, self.member.suspension_strikes), ('ACTIVE', 1))
+
+    def test_manual_suspension_is_never_reactivated_automatically(self):
+        Member.objects.filter(pk=self.member.pk).update(status='SUSPENDED', auto_suspended=False)
+        self.sync()
+        self.assertEqual(self.member.status, 'SUSPENDED')
+
+    def strike(self, n_times, return_late=True):
+        for _ in range(n_times):
+            txn = self.loan()
+            self.sync()
+            self.assertEqual(self.member.status, 'SUSPENDED')
+            self.give_back(txn)
+            if self.member.suspended_until:  # lock: pretend the week has passed
+                Member.objects.filter(pk=self.member.pk).update(suspended_until=timezone.now() - timedelta(seconds=1))
+                self.sync()
+            self.member.refresh_from_db()
+            self.assertEqual(self.member.status, 'ACTIVE')
+
+    def test_third_strike_shortens_loans_to_shortest_tier(self):
+        from .services import checkout_at_desk
+        self.strike(2)
+        txn = checkout_at_desk(self.member, self.books[2].id, self.lib, days=14)
+        self.assertEqual(txn.loan_days, 14)  # still normal after 2 strikes
+        self.give_back(txn, on=timezone.localdate())
+        self.assertEqual(Member.objects.get(pk=self.member.pk).suspension_strikes, 0)  # on-time return reset it
+        self.strike(3)
+        self.assertTrue(self.member.has_shortened_loans)
+        from .services import shortest_loan_days
+        shortest = shortest_loan_days()
+        self.assertLess(shortest, 14)
+        txn = checkout_at_desk(self.member, self.books[3].id, self.lib, days=14)
+        self.assertEqual((txn.loan_days, txn.tier_name), (shortest, f'Restricted ({shortest} days)'))
+        self.assertEqual(txn.due_date, timezone.localdate() + timedelta(days=shortest))
+
+    def test_fourth_strike_locks_for_a_week_even_after_return(self):
+        self.strike(3)
+        txn = self.loan()
+        self.sync()
+        self.assertEqual(self.member.suspension_strikes, 4)
+        self.assertGreater(self.member.suspended_until, timezone.now() + timedelta(days=6, hours=23))
+        self.give_back(txn)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.status, 'SUSPENDED')  # book returned, but still locked
+        Member.objects.filter(pk=self.member.pk).update(suspended_until=timezone.now() - timedelta(minutes=1))
+        self.sync()
+        self.assertEqual(self.member.status, 'ACTIVE')
+
+    def test_on_time_return_resets_the_streak(self):
+        self.strike(2)
+        txn = self.loan(days_ago=2, due_in=5)
+        self.give_back(txn)  # returned before the due date
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.suspension_strikes, 0)
+
+    def test_profile_page_explains_suspension(self):
+        self.loan()
+        self.client.force_login(self.user)
+        resp = self.client.get('/my-profile/')
+        self.assertContains(resp, 'Suspended automatically')

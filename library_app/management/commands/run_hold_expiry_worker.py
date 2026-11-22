@@ -2,7 +2,7 @@ import time
 
 from django.core.management.base import BaseCommand, CommandError
 
-from library_app.services import expire_stale_holds
+from library_app.services import expire_stale_holds, sync_suspensions
 
 
 class Command(BaseCommand):
@@ -52,6 +52,11 @@ class Command(BaseCommand):
             if count:
                 self.stdout.write(
                     self.style.SUCCESS(f"Released {count} expired hold(s).")
+                )
+            changed = sync_suspensions()
+            if changed:
+                self.stdout.write(
+                    self.style.SUCCESS(f"Updated {changed} member suspension(s).")
                 )
         except Exception as error:
             self.stderr.write(
