@@ -13,10 +13,21 @@
 
 <div class="content-grid" style="display:grid; grid-template-columns:minmax(0, 1.5fr) minmax(260px, 1fr); gap:1.25rem; align-items:start;">
   <section class="card">
-    <div class="card-header">
+    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;">
       <h2 class="card-title">Personal and Contact Information</h2>
+      <button type="button" id="edit-profile-btn" class="btn btn-primary" {% if form.errors %}hidden{% endif %}>Edit Profile</button>
     </div>
-    <form method="post" novalidate class="card-body">
+    <div id="profile-view" class="card-body" {% if form.errors %}hidden{% endif %}>
+      <dl class="form-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem;margin:0;">
+        {% for field in form %}
+        <div {% if field.name == 'address' %}style="grid-column:1/-1;"{% endif %}>
+          <dt class="form-label">{{ field.label }}</dt>
+          <dd style="margin:.35rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere;">{% if field.name == 'date_of_birth' %}{{ member.date_of_birth|date:"M d, Y"|default:"Not provided" }}{% else %}{{ field.value|default_if_none:""|default:"Not provided" }}{% endif %}</dd>
+        </div>
+        {% endfor %}
+      </dl>
+    </div>
+    <form id="profile-edit" method="post" novalidate class="card-body" {% if not form.errors %}hidden{% endif %}>
       {% csrf_token %}
       {% if form.non_field_errors %}<div class="alert alert-error">{{ form.non_field_errors }}</div>{% endif %}
       <div class="form-grid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem;">
@@ -29,7 +40,8 @@
         </div>
         {% endfor %}
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:1.25rem;">
+      <div style="display:flex;justify-content:flex-end;gap:.75rem;margin-top:1.25rem;">
+        <button type="button" id="cancel-profile-btn" class="btn btn-secondary">Cancel</button>
         <button type="submit" class="btn btn-primary">Save Changes</button>
       </div>
     </form>
@@ -64,5 +76,24 @@
 </div>
 <style>
 @media (max-width: 760px) { .content-grid { grid-template-columns:1fr !important; } }
+/* The site's .btn styles may override the HTML hidden attribute. */
+#profile-view[hidden], #profile-edit[hidden], #edit-profile-btn[hidden] { display:none !important; }
 </style>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const view = document.getElementById('profile-view');
+  const edit = document.getElementById('profile-edit');
+  const editButton = document.getElementById('edit-profile-btn');
+  const cancelButton = document.getElementById('cancel-profile-btn');
+  if (!view || !edit || !editButton || !cancelButton) return;
+  editButton.addEventListener('click', function () {
+    view.hidden = true;
+    edit.hidden = false;
+    editButton.hidden = true;
+  });
+  cancelButton.addEventListener('click', function () {
+    window.location.reload();
+  });
+});
+</script>
 {% endblock %}
