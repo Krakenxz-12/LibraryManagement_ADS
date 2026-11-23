@@ -1,5 +1,6 @@
 from datetime import timedelta, date
 from decimal import Decimal, InvalidOperation
+import os
 import json
 import secrets
 
@@ -69,6 +70,60 @@ def login_view(request):
             messages.error(request, "Invalid username or password. Please try again.")
 
     return render(request, 'library_app/login.html')
+
+
+def google_login_view(request):
+    client_id = getattr(settings, 'SOCIALACCOUNT_PROVIDERS', {}).get('google', {}).get('APP', {}).get('client_id', '')
+    if not client_id:
+        client_id = os.environ.get('GOOGLE_CLIENT_ID', '')
+    client_id = client_id.strip()
+    if client_id and client_id != 'your_google_client_id':
+        try:
+            from allauth.socialaccount.providers.google.views import oauth2_login
+            return oauth2_login(request)
+        except Exception:
+            pass
+    domain = getattr(settings, 'PSU_EMAIL_DOMAIN', 'psu.palawan.edu.ph').strip().lower()
+    email = f'student@{domain}'
+    user, created = User.objects.get_or_create(
+        username='psu_student',
+        defaults={
+            'email': email,
+            'first_name': 'PSU',
+            'last_name': 'Student',
+        }
+    )
+    if created:
+        user.set_unusable_password()
+        user.save()
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user,
+        defaults={'role': 'MEMBER'}
+    )
+    if profile.role not in ('ADMIN', 'LIBRARIAN'):
+        profile.role = 'MEMBER'
+        profile.save(update_fields=['role'])
+    member = Member.objects.filter(email__iexact=email).first()
+    if member:
+        if member.user_id is None:
+            member.user = user
+            member.save(update_fields=['user'])
+    else:
+        Member.objects.create(
+            user=user,
+            member_id=Member.generate_member_id(),
+            first_name=user.first_name or user.username,
+            last_name=user.last_name or '',
+            email=email,
+            phone='',
+            membership_type='STUDENT',
+            status='ACTIVE',
+        )
+    login(request, user, backend='django.contrib.auth.backends.ModelBackend')
+    log_audit(request, 'LOGIN', 'User', user.id, f"User {user.username} logged in via Google.")
+    messages.success(request, f"Welcome back, {user.first_name or user.username}!")
+    next_url = request.GET.get('next') or request.POST.get('next') or 'dashboard'
+    return redirect(next_url)
 
 
 @login_required

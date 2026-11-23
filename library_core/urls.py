@@ -18,9 +18,11 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from library_app import views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('accounts/google/login/', views.google_login_view, name='google_login'),
     path('accounts/', include('allauth.urls')),
     path('', include('library_app.urls')),
 ]
