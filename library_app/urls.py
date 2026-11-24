@@ -76,6 +76,7 @@ urlpatterns = [
     path('management/librarians/<int:user_id>/edit/', views.librarian_update_view, name='librarian_update'),
     path('management/librarians/<int:user_id>/toggle/', views.librarian_toggle_active_view, name='librarian_toggle'),
     path('management/librarians/<int:user_id>/reset-password/', views.librarian_reset_password_view, name='librarian_reset_password'),
+    path('management/account/', views.admin_account_view, name='admin_account'),
     path('management/backup/download/', views.backup_download_view, name='backup_download'),
     path('management/backup/restore/', views.backup_restore_view, name='backup_restore'),
 

@@ -1252,3 +1252,52 @@ class UsernameChangeTests(TestCase):
         self.assertContains(c.get('/my-profile/'), 'name="username"')
         s = Client(); s.force_login(self.lib)
         self.assertContains(s.get(f"/members/{self.members['ben'].id}/"), 'name="username"')
+
+
+class AdminAccountTests(AdminFeatureBase):
+    def post_details(self, **extra):
+        data = {'action': 'details', 'username': 'boss', 'first_name': 'Bea', 'middle_name': 'Lim',
+                'last_name': 'Santos', 'phone': '09171234567', 'email': 'bea@example.com'}
+        data.update(extra)
+        return self.ca.post('/management/account/', data)
+
+    def test_only_admin_can_open_the_page(self):
+        self.assertEqual(self.ca.get('/management/account/').status_code, 200)
+        self.assertEqual(self.cl.get('/management/account/').status_code, 403)
+        self.assertEqual(self.cm.get('/management/account/').status_code, 403)
+
+    def test_admin_updates_username_name_and_contact_info(self):
+        resp = self.post_details(username='bea.santos')
+        self.assertEqual(resp.status_code, 302)
+        self.admin.refresh_from_db()
+        self.admin.profile.refresh_from_db()
+        self.assertEqual((self.admin.username, self.admin.first_name, self.admin.last_name, self.admin.email),
+                         ('bea.santos', 'Bea', 'Santos', 'bea@example.com'))
+        self.assertEqual((self.admin.profile.middle_name, self.admin.profile.phone), ('Lim', '09171234567'))
+        self.assertTrue(AuditLog.objects.filter(action='CHANGE_USERNAME').exists())
+        self.assertEqual(self.ca.get('/management/account/').status_code, 200)  # still signed in
+
+    def test_rejects_taken_username_and_email_and_bad_phone(self):
+        for extra, text in [({'username': 'LIB'}, 'already taken'),
+                            ({'email': 'S@example.com'}, 'already used'),
+                            ({'phone': '12345'}, 'Philippine mobile number')]:
+            self.assertContains(self.post_details(**extra), text)
+        self.admin.refresh_from_db()
+        self.assertEqual(self.admin.username, 'boss')
+
+    def test_admin_changes_password_and_stays_signed_in(self):
+        resp = self.ca.post('/management/account/', {
+            'action': 'password', 'old_password': 'Str0ng-pass-1',
+            'new_password1': 'N3w-secret-pass', 'new_password2': 'N3w-secret-pass'})
+        self.assertEqual(resp.status_code, 302)
+        self.assertTrue(Client().login(username='boss', password='N3w-secret-pass'))
+        self.assertEqual(self.ca.get('/management/account/').status_code, 200)
+        self.assertTrue(AuditLog.objects.filter(action='CHANGE_ADMIN_PASSWORD').exists())
+
+    def test_wrong_current_password_changes_nothing(self):
+        resp = self.ca.post('/management/account/', {
+            'action': 'password', 'old_password': 'nope',
+            'new_password1': 'N3w-secret-pass', 'new_password2': 'N3w-secret-pass'})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(Client().login(username='boss', password='Str0ng-pass-1'))
+

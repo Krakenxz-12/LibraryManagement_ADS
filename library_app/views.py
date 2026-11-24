@@ -5,7 +5,8 @@ import json
 import secrets
 
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
+from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.models import User
 from django.contrib.auth.decorators import login_required
 from django.contrib import messages
@@ -23,7 +24,9 @@ from .models import (
     Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, BorrowingTier, ACTIVE_LOAN_STATUSES,
     BookReview, BookCopy,
 )
-from .forms import LibrarySettingsForm, MemberSelfProfileForm, BookReviewForm, clean_new_username
+from .forms import (
+    LibrarySettingsForm, MemberSelfProfileForm, BookReviewForm, AdminAccountForm, clean_new_username,
+)
 from .services import (
     HoldError, weekly_allowance, expire_stale_holds, promote_reservations, submit_borrow_request,
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
@@ -1653,6 +1656,68 @@ def librarian_reset_password_view(request, user_id):
     else:
         messages.success(request, f"Password for '{target.username}' was changed.")
     return redirect('librarian_list')
+
+
+# ==========================================
+# ADMIN: OWN ACCOUNT (details, username, password)
+# ==========================================
+
+@login_required
+@admin_required
+def admin_account_view(request):
+    """Let the signed-in administrator edit their own details and change their password."""
+    user = request.user
+    profile, _ = UserProfile.objects.get_or_create(user=user, defaults={'role': 'ADMIN'})
+    action = request.POST.get('action') if request.method == 'POST' else None
+
+    def details_form(data=None):
+        return AdminAccountForm(data, user=user, initial={
+            'username': user.username, 'first_name': user.first_name, 'middle_name': profile.middle_name,
+            'last_name': user.last_name, 'phone': profile.phone or '', 'email': user.email,
+        })
+
+    details = details_form()
+    password_form = PasswordChangeForm(user)
+
+    if action == 'details':
+        details = details_form(request.POST)
+        if details.is_valid():
+            data = details.cleaned_data
+            old_username = user.username
+            user.username = data['username']
+            user.first_name = data['first_name']
+            user.last_name = data['last_name']
+            user.email = data['email']
+            user.save(update_fields=['username', 'first_name', 'last_name', 'email'])
+            profile.middle_name = data['middle_name']
+            profile.phone = data['phone']
+            profile.save(update_fields=['middle_name', 'phone'])
+            if data['username'] != old_username:
+                log_audit(request, 'CHANGE_USERNAME', 'User', user.id,
+                          f"Administrator changed their username from '{old_username}' to '{data['username']}'.")
+            log_audit(request, 'UPDATE_ADMIN_ACCOUNT', 'User', user.id,
+                      f"Administrator '{user.username}' updated their account details.")
+            messages.success(request, "Your account details have been updated.")
+            return redirect('admin_account')
+        messages.error(request, "Please correct the errors in your account details.")
+    elif action == 'password':
+        password_form = PasswordChangeForm(user, request.POST)
+        if password_form.is_valid():
+            password_form.save()
+            update_session_auth_hash(request, user)  # keep the admin signed in after the change
+            log_audit(request, 'CHANGE_ADMIN_PASSWORD', 'User', user.id,
+                      f"Administrator '{user.username}' changed their password.")  # never log the password
+            messages.success(request, "Your password has been changed.")
+            return redirect('admin_account')
+        messages.error(request, "Your password was not changed. Please correct the errors below.")
+
+    for field in password_form.fields.values():
+        field.widget.attrs.setdefault('class', 'form-control')
+    return render(request, 'library_app/admin_account.html', {
+        'details_form': details,
+        'password_form': password_form,
+        'open_password': action == 'password',
+    })
 
 
 # ==========================================

@@ -138,3 +138,71 @@ class BookReviewForm(forms.ModelForm):
                 code='contact_or_link',
             )
         return comment
+
+
+class AdminAccountForm(forms.Form):
+    """Account and personal details an administrator can maintain for their own login."""
+    username = forms.CharField(
+        label='Username', max_length=30,
+        help_text='3 to 30 characters: letters, numbers, dots, dashes or underscores.',
+        widget=forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'username', 'maxlength': 30}),
+    )
+    first_name = forms.CharField(
+        label='First name', max_length=150,
+        widget=forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'given-name'}),
+    )
+    middle_name = forms.CharField(
+        label='Middle name', max_length=100, required=False,
+        widget=forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'additional-name'}),
+    )
+    last_name = forms.CharField(
+        label='Last name', max_length=150,
+        widget=forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'family-name'}),
+    )
+    phone = forms.CharField(
+        label='Contact number', required=False,
+        widget=forms.TextInput(attrs={
+            'class': 'form-control', 'autocomplete': 'tel', 'inputmode': 'numeric', 'placeholder': '09XXXXXXXXX',
+            'maxlength': '11', 'pattern': '09[0-9]{9}',
+            'title': 'Enter an 11-digit Philippine mobile number starting with 09.',
+        }),
+    )
+    email = forms.EmailField(
+        label='Email', max_length=254,
+        widget=forms.EmailInput(attrs={'class': 'form-control', 'autocomplete': 'email'}),
+    )
+
+    def __init__(self, *args, user=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.account = user
+
+    def clean_username(self):
+        return clean_new_username(self.cleaned_data.get('username'), self.account)
+
+    def clean_first_name(self):
+        return self.cleaned_data['first_name'].strip()
+
+    def clean_middle_name(self):
+        return (self.cleaned_data.get('middle_name') or '').strip()
+
+    def clean_last_name(self):
+        return self.cleaned_data['last_name'].strip()
+
+    def clean_phone(self):
+        phone = (self.cleaned_data.get('phone') or '').strip()
+        if not phone:
+            return ''
+        if not phone.isascii() or not phone.isdigit():
+            raise forms.ValidationError('Contact number must contain digits only.')
+        if len(phone) != 11 or not phone.startswith('09'):
+            raise forms.ValidationError('Enter a valid Philippine mobile number (09XXXXXXXXX).')
+        return phone
+
+    def clean_email(self):
+        email = self.cleaned_data['email'].strip()
+        taken = User.objects.filter(email__iexact=email)
+        if self.account is not None:
+            taken = taken.exclude(pk=self.account.pk)
+        if taken.exists():
+            raise forms.ValidationError('That email is already used by another account.')
+        return email
