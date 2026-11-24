@@ -1,7 +1,38 @@
+import re
+
 from django import forms
+from django.contrib.auth.models import User
 
 from .models import BookReview, LibrarySettings, Member
 from .profanity import contains_profanity, find_contact_or_link
+
+
+RESERVED_USERNAMES = {
+    'admin', 'administrator', 'root', 'superuser', 'librarian', 'library', 'staff', 'support',
+    'system', 'moderator', 'owner', 'help', 'null', 'none',
+}
+USERNAME_RE = re.compile(r'^[A-Za-z0-9._-]{3,30}$')
+
+
+def clean_new_username(raw, user=None):
+    """Validate a username a member wants to switch to. Returns the cleaned value or raises ValidationError.
+    `user` is the account being renamed (so keeping the current name is always allowed)."""
+    username = (raw or '').strip()
+    if user is not None and username == user.username:
+        return username
+    if not USERNAME_RE.match(username):
+        raise forms.ValidationError(
+            'Use 3 to 30 characters: letters, numbers, dots, dashes or underscores (no spaces).', code='invalid')
+    if username.lower() in RESERVED_USERNAMES:
+        raise forms.ValidationError('That username is reserved. Please choose another one.', code='reserved')
+    if contains_profanity(username):
+        raise forms.ValidationError('That username is not allowed. Please choose another one.', code='profanity')
+    taken = User.objects.filter(username__iexact=username)
+    if user is not None:
+        taken = taken.exclude(pk=user.pk)
+    if taken.exists():
+        raise forms.ValidationError('That username is already taken.', code='taken')
+    return username
 
 
 class LibrarySettingsForm(forms.ModelForm):
@@ -24,6 +55,23 @@ class LibrarySettingsForm(forms.ModelForm):
 
 class MemberSelfProfileForm(forms.ModelForm):
     """Fields a signed-in member is allowed to maintain on their own profile."""
+    username = forms.CharField(
+        label='Username', max_length=30,
+        help_text='3 to 30 characters: letters, numbers, dots, dashes or underscores.',
+        widget=forms.TextInput(attrs={'class': 'form-control', 'autocomplete': 'username', 'maxlength': 30}),
+    )
+    field_order = ['username', 'first_name', 'last_name', 'phone', 'address', 'date_of_birth']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.account = getattr(self.instance, 'user', None)
+        if self.account is not None:
+            self.fields['username'].initial = self.account.username
+        else:  # no login account linked: nothing to rename
+            del self.fields['username']
+
+    def clean_username(self):
+        return clean_new_username(self.cleaned_data.get('username'), self.account)
 
     class Meta:
         model = Member

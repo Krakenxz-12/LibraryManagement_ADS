@@ -23,7 +23,7 @@ from .models import (
     Reservation, FinePayment, Notification, AuditLog, BorrowRequest, LibrarySettings, BorrowingTier, ACTIVE_LOAN_STATUSES,
     BookReview, BookCopy,
 )
-from .forms import LibrarySettingsForm, MemberSelfProfileForm, BookReviewForm
+from .forms import LibrarySettingsForm, MemberSelfProfileForm, BookReviewForm, clean_new_username
 from .services import (
     HoldError, weekly_allowance, expire_stale_holds, promote_reservations, submit_borrow_request,
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
@@ -326,6 +326,14 @@ def member_edit_view(request, member_id):
     member = get_object_or_404(Member, id=member_id)
 
     if request.method == 'POST':
+        # Username lives on the linked login account; validate it first so nothing is half-saved.
+        new_username = None
+        if member.user_id and 'username' in request.POST:
+            try:
+                new_username = clean_new_username(request.POST.get('username'), member.user)
+            except ValidationError as exc:
+                messages.error(request, exc.messages[0])
+                return redirect('member_detail', member_id=member.id)
         member.first_name = request.POST.get('first_name', '').strip()
         member.last_name = request.POST.get('last_name', '').strip()
         member.email = request.POST.get('email', '').strip()
@@ -342,6 +350,12 @@ def member_edit_view(request, member_id):
         if new_type in dict(Member.MEMBERSHIP_TYPE_CHOICES):
             member.membership_type = new_type
         member.save()
+        if new_username and new_username != member.user.username:
+            old_username = member.user.username
+            member.user.username = new_username
+            member.user.save(update_fields=['username'])
+            log_audit(request, 'CHANGE_USERNAME', 'User', member.user_id,
+                      f"Username of member {member.member_id} changed from '{old_username}' to '{new_username}' by {request.user.username}.")
 
         log_audit(request, 'UPDATE_MEMBER', 'Member', member.id, f"Updated member {member.member_id}")
         messages.success(request, f"Member '{member.full_name}' updated successfully.")
@@ -386,9 +400,15 @@ def my_profile_view(request):
         if form.is_valid():
             updated_member = form.save()
             # Keep Django's account name and the optional UserProfile phone in sync.
+            old_username = request.user.username
+            new_username = form.cleaned_data.get('username', old_username)
             request.user.first_name = updated_member.first_name
             request.user.last_name = updated_member.last_name
-            request.user.save(update_fields=['first_name', 'last_name'])
+            request.user.username = new_username
+            request.user.save(update_fields=['first_name', 'last_name', 'username'])
+            if new_username != old_username:
+                log_audit(request, 'CHANGE_USERNAME', 'User', request.user.id,
+                          f"Member {member.member_id} changed their username from '{old_username}' to '{new_username}'.")
             if profile.phone != updated_member.phone:
                 profile.phone = updated_member.phone
                 profile.save(update_fields=['phone'])

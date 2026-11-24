@@ -65,6 +65,15 @@
     </div>
   </div>
 
+  {% if member.user %}
+  <div class="stat-card">
+    <div class="stat-info">
+      <div class="stat-label">Username</div>
+      <div style="font-weight: 600; font-size: 0.85rem; margin-top: 0.2rem; word-break: break-all;">{{ member.user.username }}</div>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="stat-card">
     <div class="stat-info">
       <div class="stat-label">Email Address</div>
@@ -169,6 +178,13 @@
             <input type="text" name="last_name" class="form-control" value="{{ member.last_name }}" required>
           </div>
         </div>
+        {% if member.user %}
+        <div class="form-group">
+          <label class="form-label">Username</label>
+          <input type="text" name="username" class="form-control" value="{{ member.user.username }}" minlength="3" maxlength="30" pattern="[A-Za-z0-9._-]{3,30}" required>
+          <div class="form-hint">Used to sign in. 3 to 30 letters, numbers, dots, dashes or underscores.</div>
+        </div>
+        {% endif %}
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Email Address</label>
