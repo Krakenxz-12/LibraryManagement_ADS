@@ -55,8 +55,14 @@
           </div>
           <div class="card-body">
             <div class="form-group">
+              <label class="form-label" for="borrow-book-search">Search Books</label>
+              <input type="search" id="borrow-book-search" class="form-control" placeholder="Search by title, author or shelf..." autocomplete="off" oninput="filterBorrowBooks()">
+              <div class="form-hint" id="borrow-book-search-count"></div>
+            </div>
+
+            <div class="form-group">
               <label class="form-label">Available Book Title *</label>
-              <select name="book_id" id="borrow-book-select" class="form-control" required onchange="updateBorrowSummary()">
+              <select name="book_id" id="borrow-book-select" class="form-control" required onchange="collapseBorrowBookList(); updateBorrowSummary();">
                 <option value="" disabled selected>Select a book from the available catalog...</option>
                 {% for b in available_books %}
                   <option value="{{ b.id }}" data-title="{{ b.title }}" data-author="{{ b.author }}" data-shelf="{{ b.shelf_number|default:'General Stacks' }}" data-days="{{ b.borrow_terms.days }}" data-tier="{{ b.borrow_terms.name }}" data-demand="{{ b.demand.label }}" data-reason="{{ b.demand.reason }}" data-new="{{ b.demand.is_new|yesno:'true,false' }}" data-suggested-tier-id="{{ b.borrow_terms.tier.id|default:'' }}">
@@ -267,6 +273,83 @@ function switchCirculationTab(tab) {
 }
 
 let lastBorrowBookId = '';
+let allBorrowBookOptions = [];
+
+function initBorrowBookSearch() {
+  const bookSel = document.getElementById('borrow-book-select');
+  if (!bookSel) return;
+  // Keep every real book option (skip the placeholder) so we can re-filter later.
+  allBorrowBookOptions = Array.from(bookSel.options).filter(function(o) { return o.value; });
+  const placeholder = Array.from(bookSel.options).find(function(o) { return !o.value; });
+  bookSel._placeholder = placeholder || null;
+  filterBorrowBooks();
+}
+
+function collapseBorrowBookList() {
+  const bookSel = document.getElementById('borrow-book-select');
+  if (!bookSel || bookSel.size <= 1) return;
+  const chosen = bookSel.value;
+  if (bookSel._placeholder && !bookSel._placeholder.parentNode) {
+    bookSel.insertBefore(bookSel._placeholder, bookSel.firstChild);
+  }
+  bookSel.size = 1;
+  bookSel.value = chosen;
+  // Clear the search so the full list is available again next time.
+  const searchInput = document.getElementById('borrow-book-search');
+  if (searchInput) searchInput.value = '';
+  const counter = document.getElementById('borrow-book-search-count');
+  if (counter) counter.textContent = '';
+  filterBorrowBooks();
+}
+
+function filterBorrowBooks() {
+  const bookSel = document.getElementById('borrow-book-select');
+  const searchInput = document.getElementById('borrow-book-search');
+  const counter = document.getElementById('borrow-book-search-count');
+  if (!bookSel || !searchInput) return;
+
+  const terms = searchInput.value.toLowerCase().split(/\s+/).filter(Boolean);
+  const currentValue = bookSel.value;
+
+  const matches = allBorrowBookOptions.filter(function(o) {
+    // Never drop the currently selected book, so a selection isn't lost while typing.
+    if (o.value === currentValue) return true;
+    const haystack = (
+      (o.getAttribute('data-title') || '') + ' ' +
+      (o.getAttribute('data-author') || '') + ' ' +
+      (o.getAttribute('data-shelf') || '')
+    ).toLowerCase();
+    return terms.every(function(t) { return haystack.indexOf(t) !== -1; });
+  });
+
+  const expanded = terms.length > 0;
+  bookSel.innerHTML = '';
+  // Show the placeholder only in the normal collapsed dropdown.
+  if (!expanded && bookSel._placeholder) {
+    bookSel._placeholder.selected = !currentValue;
+    bookSel.appendChild(bookSel._placeholder);
+  }
+  matches.forEach(function(o) {
+    o.selected = (o.value === currentValue);
+    bookSel.appendChild(o);
+  });
+  if (expanded && !matches.length) {
+    const empty = document.createElement('option');
+    empty.disabled = true;
+    empty.textContent = 'No matching books found';
+    bookSel.appendChild(empty);
+  }
+  // While searching, open the select as a visible list (up to 6 rows).
+  bookSel.size = expanded ? Math.max(2, Math.min(bookSel.options.length, 6)) : 1;
+
+  if (terms.length) {
+    counter.textContent = matches.length
+      ? matches.length + ' of ' + allBorrowBookOptions.length + ' books match.'
+      : 'No available books match your search.';
+  } else {
+    counter.textContent = '';
+  }
+}
 
 function updateBorrowSummary() {
   const memberSel = document.getElementById('borrow-member-select');
@@ -327,6 +410,7 @@ document.addEventListener('DOMContentLoaded', function() {
   if (params.get('tab') === 'return') {
     switchCirculationTab('return');
   }
+  initBorrowBookSearch();
   updateBorrowSummary();
 });
 </script>
