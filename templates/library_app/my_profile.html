@@ -66,7 +66,7 @@
         Because of repeated overdue suspensions ({{ member.suspension_strikes }} in a row), new loans only get the shortest borrowing period. Return a book on time to go back to normal.
       </div>
       {% endif %}
-      <div><dt class="stat-label">Outstanding Balance</dt><dd style="margin:.2rem 0 0;font-weight:700;">₱{{ member.balance|floatformat:2 }}</dd></div>
+      <div><dt class="stat-label">Outstanding Balance</dt><dd style="margin:.2rem 0 0;font-weight:700;">₱{{ member.outstanding_fines|floatformat:2 }}</dd></div>
       <div><dt class="stat-label">Created At</dt><dd style="margin:.2rem 0 0;">{{ member.created_at|date:"M d, Y g:i A" }}</dd></div>
       <div><dt class="stat-label">Last Updated</dt><dd style="margin:.2rem 0 0;">{{ member.updated_at|date:"M d, Y g:i A" }}</dd></div>
     </dl>

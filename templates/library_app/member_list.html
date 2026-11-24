@@ -70,11 +70,13 @@
               <div style="font-size: 0.75rem; color: var(--text-muted);">{{ m.phone|default:"No phone" }}</div>
             </td>
             <td>
-              {% if m.balance > 0 %}
-                <span style="color: #b91c1c; font-weight: 700;">₱{{ m.balance }}</span>
+              {% with owed=m.outstanding_fines %}
+              {% if owed > 0 %}
+                <span style="color: #b91c1c; font-weight: 700;">₱{{ owed|floatformat:2 }}</span>
               {% else %}
                 <span style="color: var(--status-available-text); font-size: 0.8rem;">No fines (₱0.00)</span>
               {% endif %}
+              {% endwith %}
             </td>
             <td>
               {% if m.status == 'ACTIVE' %}

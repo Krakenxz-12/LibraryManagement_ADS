@@ -164,7 +164,7 @@ def generate_receipt_pdf(payment):
         ["Payment Method:", payment.get_payment_method_display()],
         ["Collected By:", payment.collected_by.get_full_name() or payment.collected_by.username],
         ["Amount Paid:", f"₱{payment.amount_paid:.2f}"],
-        ["Remaining Balance:", f"₱{payment.member.balance:.2f}"],
+        ["Remaining Balance:", f"₱{payment.member.outstanding_fines:.2f}"],
     ]
 
     table = Table(data, colWidths=[160, 320])

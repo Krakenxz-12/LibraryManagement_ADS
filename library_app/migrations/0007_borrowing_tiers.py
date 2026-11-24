@@ -65,7 +65,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='librarysettings',
             name='max_renewals',
-            field=models.PositiveSmallIntegerField(default=1, validators=[django.core.validators.MaxValueValidator(5)], verbose_name='Renewals allowed per loan'),
+            field=models.PositiveSmallIntegerField(default=1, validators=[django.core.validators.MaxValueValidator(5)], verbose_name='Renewals allowed per borrow'),
         ),
         migrations.AddField(
             model_name='book',

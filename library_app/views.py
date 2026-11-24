@@ -5,6 +5,7 @@ import json
 import secrets
 
 from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
 from django.contrib.auth.forms import PasswordChangeForm
 from django.contrib.auth.models import User
@@ -32,7 +33,7 @@ from .services import (
     approve_request, reject_request, cancel_request, confirm_pickup, place_reservation,
     cancel_reservation as cancel_reservation_service, confirm_reservation_pickup, checkout_at_desk,
     renew_loan, renewal_block_reason, on_loan_returned, refresh_member_standing, suspension_message,
-    return_copy_to_shelf, set_copy_status, add_copy,
+    return_copy_to_shelf, set_copy_status, add_copy, overdue_fine_status, collect_overdue_fine,
 )
 from .demand import demand_for_books, suggest_tier, maximum_borrow_days
 from .reports import (
@@ -439,7 +440,11 @@ def member_detail_view(request, member_id):
             messages.error(request, "You can only view your own membership profile.")
             return redirect('dashboard')
 
-    borrows = member.borrows.select_related('book').all()
+    borrows = list(member.borrows.select_related('book').all())
+    for b in borrows:
+        if b.is_currently_overdue:  # show the live fine for books that are still out
+            b.fine_amount, _paid, outstanding = overdue_fine_status(b)
+            b.fine_paid = outstanding <= Decimal('0.00')
     reservations = member.reservations.select_related('book').all()
     payments = member.payments.select_related('transaction', 'collected_by').all()
 
@@ -808,6 +813,8 @@ def transaction_list_view(request):
     for txn in transactions:
         if txn.is_currently_overdue:
             txn.fine_amount = txn.compute_fine()
+            # What must be paid before the book can be returned
+            txn.fine_due_now, txn.fine_paid_so_far, txn.fine_outstanding = overdue_fine_status(txn)
 
     members = Member.objects.filter(status='ACTIVE')
     available_books = list(
@@ -864,19 +871,27 @@ def return_process_view(request, transaction_id):
             messages.info(request, "This transaction has already been completed.")
             return redirect('transaction_list')
 
+        # An overdue book can only be returned after its fine has been paid.
+        fine, _paid, outstanding = overdue_fine_status(txn)
+        if outstanding > Decimal('0.00'):
+            messages.error(
+                request,
+                f"{txn.member.full_name} must pay the overdue fine of ₱{outstanding:.2f} "
+                f"({txn.days_overdue} day(s) late) before '{txn.book.title}' can be returned. "
+                f"Use 'Collect Fine' first."
+            )
+            return redirect(f"{reverse('transaction_list')}?tab=return")
+
         today = timezone.localdate()
         txn.return_date = today
         txn.returned_to = request.user
         txn.status = 'RETURNED'
 
-        # Compute overdue fine if returned late
-        fine = txn.compute_fine()
+        # Any fine was already paid above, so it is recorded as settled and adds nothing to the balance.
         txn.fine_amount = fine
         if fine > Decimal('0.00'):
-            txn.fine_paid = False
-            txn.member.balance += fine
-            txn.member.save()
-            messages.warning(request, f"Book returned late by {txn.days_overdue} day(s). Late fee assessed: ₱{fine:.2f}.")
+            txn.fine_paid = True
+            messages.warning(request, f"Book returned late by {txn.days_overdue} day(s). The overdue fine of ₱{fine:.2f} was already paid.")
         else:
             messages.success(request, f"Book '{txn.book.title}' returned on time. No fines.")
 
@@ -895,6 +910,27 @@ def return_process_view(request, transaction_id):
     log_audit(request, 'RETURN_BOOK', 'BorrowTransaction', txn.id, f"Processed return for {txn.transaction_code}. Fine: ₱{fine:.2f}")
     on_loan_returned(txn)  # strike reset / automatic reactivation
     return redirect('transaction_list')
+
+
+@login_required
+@librarian_required
+@require_POST
+def return_fine_payment_view(request, transaction_id):
+    """Collect the overdue fine at the desk so the book can then be returned."""
+    txn = get_object_or_404(BorrowTransaction, id=transaction_id)
+    try:
+        payment = collect_overdue_fine(
+            txn.id, request.user,
+            method=request.POST.get('payment_method', 'CASH'),
+            notes=request.POST.get('notes', '').strip(),
+        )
+    except HoldError as e:
+        messages.error(request, str(e))
+        return redirect(f"{reverse('transaction_list')}?tab=return")
+    log_audit(request, 'COLLECT_FINE', 'FinePayment', payment.id,
+              f"Collected \u20b1{payment.amount_paid:.2f} overdue fine from {txn.member.full_name} before return ({payment.receipt_number})")
+    messages.success(request, f"Fine of ₱{payment.amount_paid:.2f} recorded. Receipt: {payment.receipt_number}. The book can now be returned.")
+    return redirect(f"{reverse('receipt_view', args=[payment.receipt_number])}?then=return")
 
 
 @login_required
@@ -1157,11 +1193,14 @@ def my_fines_view(request):
 
     if member:
         txns = (
-            BorrowTransaction.objects.filter(member=member, fine_amount__gt=0)
+            BorrowTransaction.objects.filter(member=member)
+            .filter(Q(fine_amount__gt=0) | Q(status__in=ACTIVE_LOAN_STATUSES, due_date__lt=timezone.localdate()))
             .select_related('book').prefetch_related('payments')
             .order_by('-issue_date', '-id')
         )
         for txn in txns:
+            if txn.is_currently_overdue:
+                txn.fine_amount = txn.compute_fine()  # live amount for books that are still out
             paid = sum((p.amount_paid for p in txn.payments.all()), Decimal('0.00'))
             outstanding = max(txn.fine_amount - paid, Decimal('0.00'))
             fine_rows.append({'txn': txn, 'paid': paid, 'outstanding': outstanding})
@@ -1333,7 +1372,7 @@ def export_report_view(request):
 SETTING_LABELS = {
     'daily_fine_rate': 'Fine per overdue day',
     'weekly_borrow_limit': 'Weekly borrowing limit',
-    'max_renewals': 'Renewals allowed per loan',
+    'max_renewals': 'Renewals allowed per borrow',
 }
 
 

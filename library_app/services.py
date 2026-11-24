@@ -6,15 +6,18 @@ A copy is "held" while a BorrowRequest is APPROVED or a Reservation is READY. Ho
 `available_copies` and given back when the hold is collected (it becomes a loan), cancelled or expired.
 """
 from datetime import timedelta
+from decimal import Decimal
 
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from .models import (
     ACTIVE_LOAN_STATUSES, SUSPENSION_LOCK_DAYS, SUSPENSION_STRIKES_FOR_SHORT_LOANS,
-    AuditLog, Book, BookCopy, BorrowRequest, BorrowTransaction, BorrowingTier, LibrarySettings, Member, Notification, Reservation,
+    AuditLog, Book, BookCopy, BorrowRequest, BorrowTransaction, BorrowingTier, FinePayment, LibrarySettings, Member,
+    Notification, Reservation,
 )
 from .demand import demand_for_books, suggest_tier
 
@@ -160,6 +163,48 @@ def on_loan_returned(txn):
             if had_short_loans and m.user_id:
                 _notify(m.user, "Borrowing period restored", "Thanks for returning on time. Your borrowing periods are back to normal.", 'GENERAL')
     refresh_member_standing(txn.member)
+
+
+# ---------------------------------------------------------------- overdue fine: pay first, then return
+ZERO = Decimal('0.00')
+
+
+def overdue_fine_status(txn):
+    """Fine accrued so far on an unreturned loan, how much of it is paid, and what is still owed.
+
+    Returns (accrued, paid, outstanding). Nothing is owed on a loan that is not overdue."""
+    accrued = txn.compute_fine()
+    paid = txn.payments.aggregate(total=Sum('amount_paid'))['total'] or ZERO
+    return accrued, paid, max(accrued - paid, ZERO)
+
+
+def collect_overdue_fine(transaction_id, user, method='CASH', notes=''):
+    """Take payment for the full fine accrued on an overdue loan that is still out.
+
+    The book can only be returned once this is settled. The fine is charged up to today, so if the member
+    comes back on a later day the extra days must be paid too. The member's balance is not touched: the
+    fine is paid immediately, so it never becomes a debt."""
+    with transaction.atomic():
+        txn = BorrowTransaction.objects.select_for_update().select_related('member__user', 'book').get(pk=transaction_id)
+        if txn.status == 'RETURNED':
+            raise HoldError("This book has already been returned.")
+        accrued, _paid, outstanding = overdue_fine_status(txn)
+        if outstanding <= ZERO:
+            raise HoldError("There is no unpaid overdue fine on this loan.")
+        if method not in dict(FinePayment.PAYMENT_METHODS):
+            method = 'CASH'
+        payment = FinePayment.objects.create(
+            receipt_number=FinePayment.generate_receipt_number(), transaction=txn, member=txn.member,
+            amount_paid=outstanding, payment_method=method, collected_by=user, notes=notes,
+        )
+        txn.fine_amount, txn.fine_paid = accrued, True
+        txn.save(update_fields=['fine_amount', 'fine_paid', 'updated_at'])
+    _notify(
+        txn.member.user, f"Payment Receipt: {payment.receipt_number}",
+        f"Received payment of \u20b1{outstanding:.2f} for the overdue fine on '{txn.book.title}'. "
+        f"Receipt #{payment.receipt_number}.", 'PAYMENT',
+    )
+    return payment
 
 
 # ---------------------------------------------------------------- named copies

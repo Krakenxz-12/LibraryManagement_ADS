@@ -169,14 +169,26 @@
             <td>
               {% if txn.is_currently_overdue %}
                 <span class="status-badge overdue">{{ txn.days_overdue }} Days Late</span>
+                <div style="font-size: 0.75rem; margin-top: 0.3rem; color: {% if txn.fine_outstanding > 0 %}#b91c1c{% else %}#15803d{% endif %};">
+                  {% if txn.fine_outstanding > 0 %}Fine due: ₱{{ txn.fine_outstanding|floatformat:2 }}{% else %}Fine paid: ₱{{ txn.fine_due_now|floatformat:2 }}{% endif %}
+                </div>
               {% else %}
                 <span class="status-badge borrowed">Within Borrow Period</span>
               {% endif %}
             </td>
             <td style="text-align: right;">
+              {% if txn.is_currently_overdue and txn.fine_outstanding > 0 %}
+              <button type="button" class="btn btn-danger btn-sm"
+                      data-txn-id="{{ txn.id }}" data-member="{{ txn.member.full_name }}" data-book="{{ txn.book.title }}"
+                      data-days="{{ txn.days_overdue }}" data-fine="{{ txn.fine_outstanding|floatformat:2 }}"
+                      onclick="openOverdueFineModal(this)">
+                Collect Fine
+              </button>
+              {% else %}
               <a href="{% url 'return_process' txn.id %}" class="btn btn-primary btn-sm" onclick="return confirm('Process return for {{ txn.book.title }}?')">
                 Return Book
               </a>
+              {% endif %}
             </td>
           </tr>
           {% endif %}
@@ -191,6 +203,48 @@
         </tbody>
       </table>
     </div>
+  </div>
+</div>
+
+<!-- Modal: collect overdue fine before return -->
+<div id="overdue-fine-modal" class="modal-overlay">
+  <div class="modal-card">
+    <div class="modal-header">
+      <h3 style="font-size: 1rem; font-weight: 700; color: var(--text-heading);">Collect Overdue Fine</h3>
+      <button type="button" onclick="closeModal('overdue-fine-modal')" style="background: none; border: none; font-size: 1.25rem; cursor: pointer; color: var(--text-light);">&times;</button>
+    </div>
+    <form id="overdue-fine-form" method="POST" action="">
+      {% csrf_token %}
+      <div class="modal-body">
+        <div style="background: var(--bg-subtle); padding: 0.75rem 1rem; border-radius: var(--radius-md); margin-bottom: 1.25rem;">
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Member:</div>
+          <div id="ofm-member" style="font-weight: 700; color: var(--text-heading); margin-bottom: 0.4rem;"></div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Book:</div>
+          <div id="ofm-book" style="font-size: 0.85rem; color: var(--text-body); margin-bottom: 0.4rem;"></div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Amount to pay (<span id="ofm-days"></span> day(s) late):</div>
+          <div id="ofm-amount" style="font-size: 1.15rem; font-weight: 700; color: #b91c1c;"></div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Payment Method *</label>
+          <select name="payment_method" class="form-control">
+            <option value="CASH" selected>Cash</option>
+            <option value="GCASH">GCash</option>
+            <option value="MAYA">Maya / PayMaya</option>
+            <option value="CARD">Credit / Debit Card</option>
+            <option value="ONLINE">Online Bank Transfer</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Notes / Reference No.</label>
+          <input type="text" name="notes" class="form-control" placeholder="Example: GCash reference no.">
+        </div>
+        <div class="form-hint" style="margin-top: 0.75rem;">The book can be returned only after this fine is paid in full.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('overdue-fine-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Record Payment &amp; Print Receipt</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -270,6 +324,16 @@ function switchCirculationTab(tab) {
   btnBorrow.classList.toggle('active', tab === 'borrow');
   btnReturn.classList.toggle('active', tab === 'return');
   btnHistory.classList.toggle('active', tab === 'history');
+}
+
+function openOverdueFineModal(btn) {
+  document.getElementById('ofm-member').textContent = btn.dataset.member;
+  document.getElementById('ofm-book').textContent = btn.dataset.book;
+  document.getElementById('ofm-days').textContent = btn.dataset.days;
+  document.getElementById('ofm-amount').textContent = '\u20b1' + btn.dataset.fine;
+  document.getElementById('overdue-fine-form').action =
+    "{% url 'return_fine_payment' 0 %}".replace('/0/', '/' + btn.dataset.txnId + '/');
+  openModal('overdue-fine-modal');
 }
 
 let lastBorrowBookId = '';

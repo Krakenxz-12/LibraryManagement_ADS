@@ -26,7 +26,7 @@ class LibrarySettings(models.Model):
         validators=[MinValueValidator(1), MaxValueValidator(50)],
     )
     max_renewals = models.PositiveSmallIntegerField(
-        'Renewals allowed per loan', default=1,
+        'Renewals allowed per borrow', default=1,
         validators=[MaxValueValidator(5)],
     )
     updated_at = models.DateTimeField(auto_now=True)
@@ -193,6 +193,24 @@ class Member(models.Model):
     def overdue_borrows_count(self):
         today = timezone.localdate()
         return self.borrows.filter(status__in=ACTIVE_LOAN_STATUSES, due_date__lt=today).count()
+
+    @property
+    def accrued_overdue_fines(self):
+        """Fines still building up on overdue books that are out right now, minus anything already paid.
+        Calculated live, because `balance` only changes when a fine is charged or paid."""
+        zero = Decimal('0.00')
+        loans = self.borrows.filter(
+            status__in=ACTIVE_LOAN_STATUSES, due_date__lt=timezone.localdate()).prefetch_related('payments')
+        total = zero
+        for loan in loans:
+            paid = sum((p.amount_paid for p in loan.payments.all()), zero)
+            total += max(loan.compute_fine() - paid, zero)
+        return total
+
+    @property
+    def outstanding_fines(self):
+        """Everything this member currently owes: unpaid past fines plus fines on overdue books still out."""
+        return self.balance + self.accrued_overdue_fines
 
     @classmethod
     def generate_member_id(cls):

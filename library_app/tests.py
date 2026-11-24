@@ -67,10 +67,15 @@ class LibraryFlowTests(TestCase):
             Notification.objects.filter(recipient=self.librarian, notification_type='LIBRARIAN_ALERT').exists()
         )
 
+        self.client.get(f'/transactions/{txn.id}/return/')  # blocked until the fine is paid
+        txn.refresh_from_db()
+        self.assertEqual(txn.status, 'OVERDUE')
+        self.client.post(f'/transactions/{txn.id}/pay-overdue-fine/', {'payment_method': 'CASH'})
         self.client.get(f'/transactions/{txn.id}/return/')
         txn.refresh_from_db()
         self.assertEqual(txn.status, 'RETURNED')
         self.assertEqual(txn.fine_amount, Decimal('100.00'))  # 5 days x PHP 20
+        self.assertTrue(txn.fine_paid)
 
     def test_cannot_delete_book_with_history(self):
         self.borrow()
@@ -345,6 +350,7 @@ class SystemSettingsTests(AdminFeatureBase):
         old.refresh_from_db(); new.refresh_from_db()
         self.assertEqual(old.compute_fine(), Decimal('40.00'))   # 2 days x old rate 20
         self.assertEqual(new.compute_fine(), Decimal('100.00'))  # 2 days x new rate 50
+        self.ca.post(f'/transactions/{new.id}/pay-overdue-fine/', {'payment_method': 'CASH'})
         self.ca.get(f'/transactions/{new.id}/return/')
         new.refresh_from_db()
         self.assertEqual(new.fine_amount, Decimal('100.00'))
@@ -1300,4 +1306,145 @@ class AdminAccountTests(AdminFeatureBase):
             'new_password1': 'N3w-secret-pass', 'new_password2': 'N3w-secret-pass'})
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(Client().login(username='boss', password='Str0ng-pass-1'))
+
+
+class PayFineBeforeReturnTests(TestCase):
+    def setUp(self):
+        cat = Category.objects.create(name='Fiction')
+        self.book = Book.objects.create(title='B', author='A', isbn='501', category=cat, shelf_number='S',
+                                        total_copies=2, available_copies=2)
+        self.user = User.objects.create_user('stu', password='pw')
+        UserProfile.objects.create(user=self.user, role='MEMBER')
+        self.member = Member.objects.create(user=self.user, member_id='M1', first_name='S', last_name='T',
+                                            email='s@x.com', phone='1')
+        self.lib = User.objects.create_user('lib', password='pw')
+        UserProfile.objects.create(user=self.lib, role='LIBRARIAN')
+        self.client = Client()
+        self.client.force_login(self.lib)
+        today = timezone.localdate()
+        self.txn = BorrowTransaction.objects.create(
+            transaction_code=BorrowTransaction.generate_transaction_code(), member=self.member, book=self.book,
+            issued_by=self.lib, issue_date=today - timedelta(days=10), due_date=today - timedelta(days=3), loan_days=7)
+        from .services import sync_suspensions
+        sync_suspensions()
+        self.member.refresh_from_db()
+
+    def give_back(self):
+        return self.client.get(f'/transactions/{self.txn.id}/return/')
+
+    def pay(self, **extra):
+        data = {'payment_method': 'CASH'}
+        data.update(extra)
+        return self.client.post(f'/transactions/{self.txn.id}/pay-overdue-fine/', data)
+
+    def test_overdue_return_is_blocked_until_the_fine_is_paid(self):
+        self.assertEqual(self.member.status, 'SUSPENDED')
+        self.give_back()
+        self.txn.refresh_from_db(); self.member.refresh_from_db()
+        self.assertNotEqual(self.txn.status, 'RETURNED')
+        self.assertEqual(self.member.status, 'SUSPENDED')  # not reactivated
+        self.assertEqual(self.member.balance, Decimal('0.00'))
+
+    def test_paying_the_fine_then_returning_reactivates_the_member(self):
+        resp = self.pay()
+        self.assertEqual(resp.status_code, 302)
+        payment = FinePayment.objects.get()
+        self.assertEqual(payment.amount_paid, Decimal('60.00'))  # 3 days x PHP 20
+        self.assertEqual(payment.transaction, self.txn)
+        self.member.refresh_from_db()
+        self.assertEqual(self.member.status, 'SUSPENDED')  # paying alone does not reactivate
+        self.give_back()
+        self.txn.refresh_from_db(); self.member.refresh_from_db()
+        self.assertEqual((self.txn.status, self.txn.fine_amount, self.txn.fine_paid), ('RETURNED', Decimal('60.00'), True))
+        self.assertEqual(self.member.status, 'ACTIVE')
+        self.assertEqual(self.member.balance, Decimal('0.00'))  # fine was paid up front, no debt
+        self.assertEqual(self.book.__class__.objects.get(pk=self.book.pk).available_copies, 2)
+
+    def test_extra_day_after_paying_must_be_paid_before_return(self):
+        self.pay()
+        BorrowTransaction.objects.filter(pk=self.txn.pk).update(due_date=timezone.localdate() - timedelta(days=4))
+        self.give_back()
+        self.txn.refresh_from_db()
+        self.assertNotEqual(self.txn.status, 'RETURNED')  # one more day has accrued
+        self.pay()
+        self.assertEqual(FinePayment.objects.count(), 2)
+        self.assertEqual(FinePayment.objects.order_by('id').last().amount_paid, Decimal('20.00'))
+        self.give_back()
+        self.txn.refresh_from_db()
+        self.assertEqual((self.txn.status, self.txn.fine_amount), ('RETURNED', Decimal('80.00')))
+
+    def test_cannot_pay_twice_or_pay_a_loan_that_is_not_overdue(self):
+        self.pay(); self.pay()
+        self.assertEqual(FinePayment.objects.count(), 1)
+        BorrowTransaction.objects.filter(pk=self.txn.pk).update(due_date=timezone.localdate() + timedelta(days=5))
+        self.client.post(f'/transactions/{self.txn.id}/pay-overdue-fine/', {'payment_method': 'CASH'})
+        self.assertEqual(FinePayment.objects.count(), 1)
+
+    def test_on_time_return_needs_no_payment(self):
+        BorrowTransaction.objects.filter(pk=self.txn.pk).update(due_date=timezone.localdate() + timedelta(days=5))
+        self.give_back()
+        self.txn.refresh_from_db()
+        self.assertEqual((self.txn.status, self.txn.fine_amount), ('RETURNED', Decimal('0.00')))
+
+    def test_members_cannot_collect_fines_and_get_a_receipt_with_continue_link(self):
+        c = Client(); c.force_login(self.user)
+        self.assertEqual(c.post(f'/transactions/{self.txn.id}/pay-overdue-fine/', {'payment_method': 'CASH'}).status_code, 403)
+        resp = self.pay()
+        self.assertIn('then=return', resp['Location'])
+        self.assertContains(self.client.get(resp['Location']), 'Continue to Return')
+
+    def test_return_tab_shows_collect_fine_until_paid(self):
+        self.assertContains(self.client.get('/transactions/'), 'openOverdueFineModal(this)')
+        self.pay()
+        page = self.client.get('/transactions/').content.decode()
+        self.assertNotIn('openOverdueFineModal(this)', page)  # the button is replaced by Return Book
+        self.assertIn('Fine paid', page)
+
+
+class MemberOutstandingFinesTests(TestCase):
+    def setUp(self):
+        cat = Category.objects.create(name='Fiction')
+        self.books = [Book.objects.create(title=f'B{i}', author='A', isbn=f'60{i}', category=cat, shelf_number='S',
+                                          total_copies=2, available_copies=2) for i in range(2)]
+        self.user = User.objects.create_user('stu', password='pw')
+        UserProfile.objects.create(user=self.user, role='MEMBER')
+        self.member = Member.objects.create(user=self.user, member_id='M1', first_name='S', last_name='T',
+                                            email='s@x.com', phone='1')
+        self.lib = User.objects.create_user('lib', password='pw')
+        UserProfile.objects.create(user=self.lib, role='LIBRARIAN')
+        today = timezone.localdate()
+        self.loans = [
+            BorrowTransaction.objects.create(
+                transaction_code=BorrowTransaction.generate_transaction_code(), member=self.member, book=self.books[i],
+                issued_by=self.lib, issue_date=today - timedelta(days=20), due_date=today - timedelta(days=days),
+                loan_days=7)
+            for i, days in enumerate((6, 8))  # 6 x 20 = 120 and 8 x 20 = 160
+        ]
+
+    def test_outstanding_includes_fines_on_overdue_books_still_out(self):
+        self.assertEqual(self.member.balance, Decimal('0.00'))
+        self.assertEqual(self.member.outstanding_fines, Decimal('280.00'))
+
+    def test_member_detail_and_list_show_the_outstanding_amount(self):
+        c = Client(); c.force_login(self.lib)
+        self.assertContains(c.get(f'/members/{self.member.id}/'), '280.00')
+        self.assertContains(c.get('/members/'), '280.00')
+
+    def test_paying_a_fine_lowers_the_outstanding_amount(self):
+        c = Client(); c.force_login(self.lib)
+        c.post(f'/transactions/{self.loans[0].id}/pay-overdue-fine/', {'payment_method': 'CASH'})
+        self.assertEqual(Member.objects.get(pk=self.member.pk).outstanding_fines, Decimal('160.00'))
+        c.post(f'/transactions/{self.loans[1].id}/pay-overdue-fine/', {'payment_method': 'CASH'})
+        self.assertEqual(Member.objects.get(pk=self.member.pk).outstanding_fines, Decimal('0.00'))
+
+    def test_past_unpaid_balance_is_added_on_top(self):
+        Member.objects.filter(pk=self.member.pk).update(balance=Decimal('50.00'))
+        self.assertEqual(Member.objects.get(pk=self.member.pk).outstanding_fines, Decimal('330.00'))
+
+    def test_my_fines_and_my_profile_show_overdue_books_still_out(self):
+        c = Client(); c.force_login(self.user)
+        r = c.get('/my-fines/')
+        self.assertEqual(r.context['total_outstanding'], Decimal('280.00'))
+        self.assertEqual(len(r.context['unpaid_fines']), 2)
+        self.assertContains(c.get('/my-profile/'), '280.00')
 

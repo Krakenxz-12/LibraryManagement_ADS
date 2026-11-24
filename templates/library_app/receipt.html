@@ -10,6 +10,9 @@
     <h1 class="page-title" style="margin-top: 0.4rem;">Official Payment Receipt</h1>
   </div>
   <div style="display: flex; gap: 0.5rem;">
+    {% if request.GET.then == 'return' %}
+    <a href="{% url 'transaction_list' %}?tab=return" class="btn btn-primary">Continue to Return</a>
+    {% endif %}
     <button onclick="window.print()" class="btn btn-secondary">
       <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" style="width: 16px; height: 16px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" /></svg>
       <span>Print Receipt</span>
@@ -52,10 +55,10 @@
   </div>
   <div class="receipt-balance">
     <span>Remaining balance</span>
-    <span class="{% if payment.member.balance > 0 %}receipt-owing{% endif %}">₱{{ payment.member.balance }}</span>
+    {% with owed=payment.member.outstanding_fines %}<span class="{% if owed > 0 %}receipt-owing{% endif %}">₱{{ owed }}</span>{% endwith %}
   </div>
 
-  <div class="receipt-paid-stamp">{% if payment.member.balance > 0 %}Payment Received{% else %}Paid in Full{% endif %}</div>
+  <div class="receipt-paid-stamp">{% if payment.member.outstanding_fines > 0 %}Payment Received{% else %}Paid in Full{% endif %}</div>
 
   <div class="receipt-signature">
     <div class="receipt-signature-line"></div>

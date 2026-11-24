@@ -31,6 +31,7 @@ urlpatterns = [
     path('transactions/', views.transaction_list_view, name='transaction_list'),
     path('transactions/borrow/', views.borrow_create_view, name='borrow_create'),
     path('transactions/<int:transaction_id>/return/', views.return_process_view, name='return_process'),
+    path('transactions/<int:transaction_id>/pay-overdue-fine/', views.return_fine_payment_view, name='return_fine_payment'),
     path('transactions/<int:transaction_id>/renew/', views.renew_loan_view, name='renew_loan'),
 
     # Module 4: Reservations

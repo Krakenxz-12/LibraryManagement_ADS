@@ -59,9 +59,11 @@
   <div class="stat-card">
     <div class="stat-info">
       <div class="stat-label">Outstanding Fines</div>
-      <div class="stat-value" style="font-size: 1.15rem; margin-top: 0.2rem; color: {% if member.balance > 0 %}#b91c1c{% else %}var(--status-available-text){% endif %};">
-        ₱{{ member.balance }}
+      {% with owed=member.outstanding_fines %}
+      <div class="stat-value" style="font-size: 1.15rem; margin-top: 0.2rem; color: {% if owed > 0 %}#b91c1c{% else %}var(--status-available-text){% endif %};">
+        ₱{{ owed|floatformat:2 }}
       </div>
+      {% endwith %}
     </div>
   </div>
 
